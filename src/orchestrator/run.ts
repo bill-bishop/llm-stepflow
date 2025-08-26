@@ -7,6 +7,7 @@ import { write, type Blackboard } from "../blackboard/index.js";
 import { topoSort } from "./topo.js";
 import { verifyInvariants } from "./verify.js";
 import { branchFactory } from "./branchFactory.js";
+import { writeJson } from "./materialize.js";
 
 export interface RunOptions {
   provider: LLMProvider;
@@ -15,11 +16,12 @@ export interface RunOptions {
   blackboard: Blackboard;
   model: string;
   maxIterationsPerStep?: number;
+  runId?: string; // NEW: persistent artifacts under runs/{runId}/{step}/
 }
 
 function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
   return Object.values(reg).map(t => ({
-    name: t.name,
+    name: t.name, // NOTE: names must already match ^[a-zA-Z0-9_-]+$
     description: `Adapter for ${t.name}`,
     parameters: {
       type: "object",
@@ -30,19 +32,20 @@ function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
 
 export async function runGraph(opts: RunOptions) {
   const order = topoSort(opts.graph);
+  const runId = opts.runId || new Date().toISOString().replace(/[:.]/g, "-");
   for (const stepId of order) {
     const step = opts.graph.steps[stepId];
-    await runStep(step, opts);
+    await runStep(step, { ...opts, runId });
   }
 }
 
 export async function runStep(step: StepContract, opts: RunOptions) {
-  const { provider, tools, blackboard, model } = opts;
+  const { provider, tools, blackboard, model, runId } = opts;
   const toolDefs = toolDefsFromRegistry(tools);
   let messages = renderMetaprompt(step, blackboard);
 
   for (let i = 0; i < (opts.maxIterationsPerStep ?? 6); i++) {
-    const out = await provider.complete({
+    const llmArgs = {
       model,
       messages,
       tools: toolDefs,
@@ -50,7 +53,17 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       temperature: 0.2,
       response_format: { type: "json_object" },
       max_tokens: 800
-    });
+    } as const;
+
+    const out = await provider.complete(llmArgs);
+
+    // Persist request/response per iteration
+    if (runId) {
+      try {
+        writeJson(runId, step.step_id, `iter_${i}_request.json`, { messages, llmArgs });
+        writeJson(runId, step.step_id, `iter_${i}_response.json`, out);
+      } catch {}
+    }
 
     if (out.tool_calls?.length) {
       for (const call of out.tool_calls) {
@@ -62,6 +75,12 @@ export async function runStep(step: StepContract, opts: RunOptions) {
         let args: any = {};
         try { args = JSON.parse(call.arguments || "{}"); } catch {}
         const result = await spec.invoke(args);
+
+        // Persist each tool call/return
+        if (runId) {
+          try { writeJson(runId, step.step_id, `tool_${call.name}_${call.id}.json`, { args, result }); } catch {}
+        }
+
         messages.push({
           role: "tool",
           name: call.name,
@@ -72,6 +91,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
+    // Expect strict JSON outputs
     let parsed: any;
     try { parsed = JSON.parse(out.content || "{}"); }
     catch {
@@ -80,12 +100,17 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
+    // Write declared outputs to blackboard
     for (const field of Object.keys(step.outputs_schema)) {
       if (parsed[field] !== undefined) {
         write(blackboard, `${step.step_id}.${field}`, parsed[field]);
       }
     }
+    if (runId) {
+      try { writeJson(runId, step.step_id, `outputs.json`, parsed); } catch {}
+    }
 
+    // Verify & optional branching
     const verdict = verifyInvariants(step, blackboard);
     if (!verdict.pass) {
       const sub = branchFactory(verdict.intent || "", step, blackboard);
