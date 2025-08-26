@@ -7,7 +7,7 @@ import type { ToolSpec } from "../../types/tools.js";
  *  - TAVILY_BASE_URL (optional, default: https://api.tavily.com/search)
  */
 export const webSearch: ToolSpec = {
-  name: "web.search",
+  name: "web_search",
   input_schema: {
     query: "string (search query)",
     k: "number (max results, default 5)"

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM StepFlow — Deterministic Diagram</title>
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --panel: #151922;
+      --text: #e7e9ee;
+      --muted: #a2a9b3;
+      --accent: #6ea8fe;
+      --lane: #0f1320;
+      --edge: #9fb3c8;
+      --chip-bg: #1b2130;
+      --ok: #7fdca7;
+      --warn: #ffd166;
+      --danger: #ff6b6b;
+    }
+    [data-theme="light"] {
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --text: #20242c;
+      --muted: #4e5a6a;
+      --accent: #335dff;
+      --lane: #f0f3ff;
+      --edge: #7b8ba1;
+      --chip-bg: #e9eef8;
+      --ok: #2ea665;
+      --warn: #b78900;
+      --danger: #c44545;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid rgba(127, 140, 160, .25);
+    }
+    header .title { font-weight: 700; letter-spacing: .2px; }
+    header .spacer { flex: 1; }
+    header button, header select, header a.btn {
+      background: var(--chip-bg);
+      color: var(--text);
+      border: 1px solid rgba(127, 140, 160, .25);
+      padding: 8px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      font: inherit;
+    }
+    header a.btn { text-decoration: none; }
+    main { display: grid; grid-template-columns: 280px 1fr; gap: 12px; padding: 12px; min-height: 0; }
+    .legend {
+      background: var(--panel);
+      border: 1px solid rgba(127, 140, 160, .25);
+      border-radius: 14px;
+      padding: 12px;
+      line-height: 1.25;
+      font-size: 14px;
+      overflow: auto;
+    }
+    .legend h3 { margin: 8px 0 6px; font-size: 14px; color: var(--muted); }
+    .legend .item { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: center; margin: 6px 0; }
+    .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip-bg); border: 1px solid rgba(127, 140, 160, .25); font-size: 12px; }
+    #cy {
+      background: var(--lane);
+      border: 1px solid rgba(127, 140, 160, .25);
+      border-radius: 14px;
+      min-height: 400px;
+      height: calc(100vh - 120px);
+    }
+  </style>
+  <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+</head>
+<body data-theme="dark">
+  <header>
+    <div class="title">LLM StepFlow — Runtime & Design Flow</div>
+    <div class="spacer"></div>
+    <select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+    <button id="fit">Fit</button>
+    <button id="layout">Re-layout</button>
+    <a id="export" class="btn" href="#" download="llm-stepflow.png">Export PNG</a>
+  </header>
+  <main>
+    <aside class="legend">
+      <div><span class="chip">Visual grammar</span></div>
+      <h3>Node types</h3>
+      <div class="item"><div>⬭</div><div><b>component</b> — orchestrator, compiler, renderer</div></div>
+      <div class="item"><div>⬢</div><div><b>adapter</b> — LLM providers</div></div>
+      <div class="item"><div>⬚</div><div><b>tool</b> — web_search, cli_exec, http_request</div></div>
+      <div class="item"><div>⬭</div><div><b>artifact</b> — blackboard, workflows</div></div>
+      <div class="item"><div>◆</div><div><b>gate</b> — invariants</div></div>
+      <h3>Edge types</h3>
+      <div class="item"><div>—</div><div><b>control</b></div></div>
+      <div class="item"><div>···</div><div><b>tool_call</b></div></div>
+      <div class="item"><div>━━</div><div><b>write</b></div></div>
+    </aside>
+    <div id="cy"></div>
+  </main>
+
+  <script>
+  const elements = {
+    nodes: [
+      { data: { id: 'lane_design', label: 'Design-time', type: 'lane' } },
+      { data: { id: 'lane_runtime', label: 'Runtime loop', type: 'lane' } },
+      { data: { id: 'lane_external', label: 'External', type: 'lane' } },
+      { data: { id: 'lane_artifacts', label: 'Artifacts', type: 'lane' } },
+
+      { data: { id: 'graph',      label: 'StepGraph (JSON)', type: 'artifact', parent: 'lane_design' } },
+      { data: { id: 'compiler',   label: 'compiler.compileGraph', type: 'component', parent: 'lane_design' } },
+
+      { data: { id: 'orchestrator', label: 'orchestrator.runGraph', type: 'component', parent: 'lane_runtime' } },
+      { data: { id: 'runstep',      label: 'orchestrator.runStep', type: 'component', parent: 'lane_runtime' } },
+      { data: { id: 'renderer',     label: 'prompt.renderMetaprompt', type: 'component', parent: 'lane_runtime' } },
+      { data: { id: 'provider',     label: 'LLMProvider.complete', type: 'adapter', parent: 'lane_runtime' } },
+      { data: { id: 'tools',        label: 'Tool Registry', type: 'component', parent: 'lane_runtime' } },
+      { data: { id: 'gate',         label: 'verify.invariants ◆', type: 'gate', parent: 'lane_runtime' } },
+      { data: { id: 'branch',       label: 'branchFactory (optional)', type: 'component', parent: 'lane_runtime' } },
+      { data: { id: 'materialize',  label: 'materialize.writeJson', type: 'component', parent: 'lane_runtime' } },
+
+      { data: { id: 'openai_chat',  label: 'OpenAI Chat Completions', type: 'adapter', parent: 'lane_external' } },
+      { data: { id: 'openai_resp',  label: 'OpenAI Responses', type: 'adapter', parent: 'lane_external' } },
+      { data: { id: 'tavily',       label: 'Tavily Search API', type: 'adapter', parent: 'lane_external' } },
+
+      { data: { id: 'web',          label: 'tool: web_search', type: 'tool', parent: 'lane_external' } },
+      { data: { id: 'cli',          label: 'tool: cli_exec', type: 'tool', parent: 'lane_external' } },
+      { data: { id: 'http',         label: 'tool: http_request', type: 'tool', parent: 'lane_external' } },
+
+      { data: { id: 'blackboard',   label: 'Blackboard (KV + versions)', type: 'artifact', parent: 'lane_artifacts' } },
+      { data: { id: 'workflows',    label: 'Workflows / library', type: 'artifact', parent: 'lane_artifacts' } }
+    ],
+    edges: [
+      { data: { id: 'e1', source: 'graph', target: 'compiler', type: 'control' } },
+      { data: { id: 'e2', source: 'compiler', target: 'orchestrator', type: 'control' } },
+      { data: { id: 'e3', source: 'orchestrator', target: 'runstep', type: 'control' } },
+      { data: { id: 'e4', source: 'runstep', target: 'renderer', type: 'control' } },
+      { data: { id: 'e5', source: 'renderer', target: 'provider', type: 'control' } },
+      { data: { id: 'e6', source: 'provider', target: 'tools', type: 'tool_call' } },
+      { data: { id: 'e7', source: 'tools', target: 'web', type: 'tool_call' } },
+      { data: { id: 'e8', source: 'tools', target: 'cli', type: 'tool_call' } },
+      { data: { id: 'e9', source: 'tools', target: 'http', type: 'tool_call' } },
+      { data: { id: 'e10', source: 'provider', target: 'openai_chat', type: 'control', dashed: true } },
+      { data: { id: 'e11', source: 'provider', target: 'openai_resp', type: 'control', dashed: true } },
+      { data: { id: 'e12', source: 'runstep', target: 'blackboard', type: 'write' } },
+      { data: { id: 'e13', source: 'blackboard', target: 'gate', type: 'control' } },
+      { data: { id: 'e14', source: 'gate', target: 'branch', type: 'control', dashed: true } },
+      { data: { id: 'e15', source: 'branch', target: 'runstep', type: 'control', dashed: true } },
+      { data: { id: 'e16', source: 'runstep', target: 'materialize', type: 'control', dashed: true } },
+      { data: { id: 'e17', source: 'web', target: 'tavily', type: 'control', dashed: true } },
+      { data: { id: 'e18', source: 'workflows', target: 'orchestrator', type: 'control', dashed: true } }
+    ]
+  };
+
+  cytoscape.use(window.cytoscapeDagre);
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements,
+    wheelSensitivity: 0.2,
+    style: [
+      { selector: 'node[type="lane"]', style: {
+          'shape': 'round-rectangle', 'background-color': 'rgba(0,0,0,0)',
+          'border-width': 2, 'border-color': 'rgba(127,140,160,.35)',
+          'label': 'data(label)', 'text-valign': 'top','text-halign': 'left',
+          'text-margin-y': -6, 'text-margin-x': 8, 'font-size': 12, 'z-index': 0
+      }},
+      { selector: 'node', style: {
+          'shape': 'round-rectangle','background-color': '#1f2636',
+          'border-color': '#2e3b55','border-width': 2,'label': 'data(label)',
+          'color': 'var(--text)','text-wrap':'wrap','text-max-width':160,'font-size':12,'padding':'10px','z-index':10
+      }},
+      { selector: 'node[type="component"]', style: { 'background-color': '#1e2a46' } },
+      { selector: 'node[type="adapter"]',   style: { 'shape': 'hexagon', 'background-color': '#2a2342' } },
+      { selector: 'node[type="tool"]',      style: { 'shape': 'rectangle', 'background-color': '#28313a' } },
+      { selector: 'node[type="artifact"]',  style: { 'shape': 'ellipse', 'background-color': '#263a2b' } },
+      { selector: 'node[type="gate"]',      style: { 'shape': 'diamond', 'background-color': '#3a2a2a' } },
+      { selector: 'edge', style: {
+          'curve-style': 'bezier','line-color': 'var(--edge)','width':2,
+          'target-arrow-shape': 'triangle','target-arrow-color':'var(--edge)'
+      }},
+      { selector: 'edge[type="tool_call"]', style: { 'line-style': 'dotted', 'width': 2.5 } },
+      { selector: 'edge[type="write"]',     style: { 'line-color': '#7fdca7', 'target-arrow-color': '#7fdca7', 'width': 3 } },
+      { selector: 'edge[dashed = "true"]',  style: { 'line-style': 'dashed' } }
+    ],
+    layout: { name: 'dagre', rankDir: 'LR', nodeSep: 28, rankSep: 80, edgeSep: 12 }
+  });
+
+  function sizeLanes() {
+    const padding = 50;
+    const bb = cy.boundingBox({ includeLabels: false, includeNodes: true });
+    const w = bb.w + 2*padding, h = bb.h + 2*padding;
+    const cols = [
+      { id: 'lane_design', x: bb.x1 - padding,         y: bb.y1 - padding, w: w * 0.25, h },
+      { id: 'lane_runtime', x: bb.x1 - padding + w*0.25 + 12, y: bb.y1 - padding, w: w * 0.45 - 24, h },
+      { id: 'lane_external', x: bb.x1 - padding + w*0.70, y: bb.y1 - padding, w: w * 0.30, h: h * 0.6 },
+      { id: 'lane_artifacts', x: bb.x1 - padding + w*0.25 + 12, y: bb.y1 - padding + h*0.64, w: w * 0.45 - 24, h: h * 0.36 }
+    ];
+    for (const c of cols) {
+      const n = cy.getElementById(c.id);
+      n.lock();
+      n.style({ 'width': c.w, 'height': c.h });
+      n.position({ x: c.x + c.w/2, y: c.y + c.h/2 });
+      n.move({ parent: null });
+      n.style('z-index', 1);
+      n.style('background-color', 'rgba(255,255,255,0.02)');
+    }
+  }
+  cy.on('layoutstop', sizeLanes);
+  sizeLanes();
+
+  document.getElementById('theme').addEventListener('change', (e) => {
+    document.body.setAttribute('data-theme', e.target.value);
+    cy.style().update();
+  });
+  document.getElementById('fit').addEventListener('click', () => cy.fit(undefined, 40));
+  document.getElementById('layout').addEventListener('click', () => {
+    cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 28, rankSep: 80, edgeSep: 12 }).run();
+  });
+  document.getElementById('export').addEventListener('click', (e) => {
+    const png = cy.png({ full: true, bg: getComputedStyle(document.body).getPropertyValue('--bg') });
+    e.currentTarget.href = png;
+  });
+  </script>
+</body>
+</html>

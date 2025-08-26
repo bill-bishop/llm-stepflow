@@ -1,7 +1,7 @@
 import type { ToolSpec } from "../../types/tools.js";
 
 export const httpRequest: ToolSpec = {
-  name: "http.request",
+  name: "http_request",
   input_schema: {
     url: "string (absolute URL)",
     method: "string (GET,POST,...)",

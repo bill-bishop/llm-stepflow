@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM StepFlow — Execution Flow</title>
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --panel: #151922;
+      --text: #e7e9ee;
+      --muted: #a2a9b3;
+      --accent: #6ea8fe;
+      --lane: #0f1320;
+      --edge: #9fb3c8;
+      --chip-bg: #1b2130;
+      --ok: #7fdca7;
+      --warn: #ffd166;
+      --danger: #ff6b6b;
+    }
+    [data-theme="light"] {
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --text: #20242c;
+      --muted: #4e5a6a;
+      --accent: #335dff;
+      --lane: #f0f3ff;
+      --edge: #7b8ba1;
+      --chip-bg: #e9eef8;
+      --ok: #2ea665;
+      --warn: #b78900;
+      --danger: #c44545;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid rgba(127, 140, 160, .25);
+    }
+    header .title { font-weight: 700; letter-spacing: .2px; }
+    header .spacer { flex: 1; }
+    header button, header select, header a.btn {
+      background: var(--chip-bg); color: var(--text);
+      border: 1px solid rgba(127, 140, 160, .25);
+      padding: 8px 10px; border-radius: 10px; cursor: pointer; font: inherit;
+    }
+    header a.btn { text-decoration: none; }
+    main { display: grid; grid-template-columns: 320px 1fr; gap: 12px; padding: 12px; min-height: 0; }
+    .legend {
+      background: var(--panel);
+      border: 1px solid rgba(127, 140, 160, .25);
+      border-radius: 14px;
+      padding: 12px; line-height: 1.25; font-size: 14px; overflow: auto;
+    }
+    .legend pre { background: var(--lane); padding: 8px 10px; border-radius: 8px; overflow: auto; }
+    .legend h3 { margin: 8px 0 6px; font-size: 14px; color: var(--muted); }
+    .legend .item { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: center; margin: 6px 0; }
+    .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip-bg); border: 1px solid rgba(127, 140, 160, .25); font-size: 12px; }
+    #cy {
+      background: var(--lane);
+      border: 1px solid rgba(127, 140, 160, .25);
+      border-radius: 14px;
+      min-height: 400px;
+      height: calc(100vh - 120px);
+    }
+  </style>
+  <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+</head>
+<body data-theme="dark">
+  <header>
+    <div class="title">LLM StepFlow — Execution Flow</div>
+    <div class="spacer"></div>
+    <select id="theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+    <button id="fit">Fit</button>
+    <button id="layout">Re-layout</button>
+    <a id="export" class="btn" href="#" download="llm-stepflow-execution.png">Export PNG</a>
+  </header>
+  <main>
+    <aside class="legend">
+      <div style="margin-bottom:6px"><span class="chip">What this shows</span></div>
+      A deterministic view of how a <b>StepGraph</b> is executed: compile → topo order → per-step loop (LLM + tools) → write outputs → verify/branch → next step → finalize.
+      <h3>StepGraph schema (minimal)</h3>
+      <pre>{
+  "steps": {
+    "step_id": {
+      "executor": "intelligent|procedural|workflow",
+      "inputs": { "required": ["a", "b"], "optional": [] },
+      "outputs_schema": { "x": "string", "y": "number" },
+      "invariants": ["confidence>=0.7"]
+    }
+  },
+  "edges": [{ "from": "a", "to": "b" }]
+}</pre>
+      <h3>Legend</h3>
+      <div class="item"><div>⬭</div><div><b>stage</b> (engine operation)</div></div>
+      <div class="item"><div>◆</div><div><b>decision</b> (yes/no)</div></div>
+      <div class="item"><div>⬢</div><div><b>adapter</b> (LLM)</div></div>
+      <div class="item"><div>▢</div><div><b>tool</b> (web/cli/http)</div></div>
+      <div class="item"><div>◯</div><div><b>artifact</b> (Blackboard)</div></div>
+      <div class="item"><div>⟲</div><div><b>loop</b> (for each/while)</div></div>
+    </aside>
+    <div id="cy"></div>
+  </main>
+
+  <script>
+  const N = (id,label,type,parent) => ({ data:{ id, label, type, parent }});
+  const E = (id, s, t, type, dashed, label) => ({ data:{ id, source:s, target:t, type, dashed: !!dashed, label: label||"" } });
+
+  const nodes = [
+    N('lane_pipeline', 'Execution', 'lane'),
+    N('lane_tools', 'Tools', 'lane'),
+    N('lane_artifacts', 'Artifacts', 'lane'),
+
+    // Pipeline
+    N('start', 'Start', 'start', 'lane_pipeline'),
+    N('load', 'Load StepGraph (JSON)', 'stage', 'lane_pipeline'),
+    N('compile', 'Compile & Validate', 'stage', 'lane_pipeline'),
+    N('registry', 'Build Tool Registry', 'stage', 'lane_pipeline'),
+    N('bb_init', 'Create Blackboard', 'stage', 'lane_pipeline'),
+    N('topo', 'Topo Sort Steps', 'loop', 'lane_pipeline'),
+    N('deps', 'Dependencies Ready?', 'decision', 'lane_pipeline'),
+    N('render', 'Render Metaprompt', 'stage', 'lane_pipeline'),
+    N('llm', 'LLMProvider.complete', 'adapter', 'lane_pipeline'),
+    N('has_tools', 'tool_calls?', 'decision', 'lane_pipeline'),
+    N('call_tool', 'Invoke Tool', 'tool', 'lane_pipeline'),
+    N('append', 'Append Tool Result → messages', 'stage', 'lane_pipeline'),
+    N('parse', 'Parse Assistant JSON', 'stage', 'lane_pipeline'),
+    N('write', 'Write Outputs → Blackboard', 'stage', 'lane_pipeline'),
+    N('verify', 'Verify Invariants', 'decision', 'lane_pipeline'),
+    N('branch', 'Inject Subgraph (optional)', 'stage', 'lane_pipeline'),
+    N('next', 'Next Ready Step', 'loop', 'lane_pipeline'),
+    N('finish', 'Finalize / Materialize', 'stage', 'lane_pipeline'),
+    N('end', 'End', 'end', 'lane_pipeline'),
+
+    // Tools lane (specific tools/adapters)
+    N('chat', 'OpenAI Chat Completions', 'adapter', 'lane_tools'),
+    N('responses', 'OpenAI Responses', 'adapter', 'lane_tools'),
+    N('web', 'tool: web.search', 'tool', 'lane_tools'),
+    N('cli', 'tool: cli_exec', 'tool', 'lane_tools'),
+    N('http', 'tool: http_request', 'tool', 'lane_tools'),
+
+    // Artifacts
+    N('bb', 'Blackboard (KV + versions)', 'artifact', 'lane_artifacts'),
+  ];
+
+  const edges = [
+    E('e0','start','load','control',false),
+    E('e1','load','compile','control',false),
+    E('e2','compile','registry','control',false),
+    E('e3','registry','bb_init','control',false),
+    E('e4','bb_init','topo','control',false, 'for each step in order'),
+    E('e5','topo','deps','control',false),
+    E('e6','deps','render','control',false,'Yes'),
+    E('e7','deps','next','control',false,'No'),
+    E('e8','render','llm','control',false),
+    E('e9','llm','has_tools','control',false),
+    E('e10','has_tools','call_tool','control',false,'Yes'),
+    E('e11','call_tool','append','control',false),
+    E('e12','append','llm','control',false,'while tool_calls'),
+    E('e13','has_tools','parse','control',false,'No'),
+    E('e14','parse','write','control',false),
+    E('e15','write','bb','write',false,'emit'),
+    E('e16','write','verify','control',false),
+    E('e17','verify','next','control',false,'Pass'),
+    E('e18','verify','branch','control',false,'Fail'),
+    E('e19','branch','topo','control',true,'inject & continue'),
+    E('e20','next','finish','control',false,'when none left'),
+    E('e21','finish','end','control',false),
+
+    // Provider variants (dashed)
+    E('ep1','llm','chat','control',true,'variant'),
+    E('ep2','llm','responses','control',true,'variant'),
+
+    // Tools (dotted edge type to emphasize tool_call)
+    E('t1','call_tool','web','tool_call',false),
+    E('t2','call_tool','cli','tool_call',false),
+    E('t3','call_tool','http','tool_call',false),
+  ];
+
+  const elements = { nodes, edges };
+
+  cytoscape.use(window.cytoscapeDagre);
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements,
+    wheelSensitivity: 0.2,
+    style: [
+      // Lanes
+      { selector: 'node[type="lane"]', style: {
+        'shape': 'round-rectangle','background-color':'rgba(0,0,0,0)',
+        'border-width': 2,'border-color': 'rgba(127,140,160,.35)',
+        'label':'data(label)','text-valign':'top','text-halign':'left',
+        'text-margin-y': -6,'text-margin-x':8,'font-size':12,'z-index':0
+      }},
+      // Base nodes
+      { selector: 'node', style: {
+        'shape': 'round-rectangle','background-color': '#1f2636',
+        'border-color': '#2e3b55','border-width': 2,'label': 'data(label)',
+        'color': 'var(--text)','text-wrap':'wrap','text-max-width': 184,
+        'font-size': 12,'padding': '10px','z-index': 10
+      }},
+      { selector: 'node[type="stage"]',    style: { 'background-color': '#1e2a46' } },
+      { selector: 'node[type="loop"]',     style: { 'background-color': '#24364e', 'border-style': 'dashed' } },
+      { selector: 'node[type="decision"]', style: { 'shape': 'diamond', 'background-color': '#3a2a2a' } },
+      { selector: 'node[type="adapter"]',  style: { 'shape': 'hexagon', 'background-color': '#2a2342' } },
+      { selector: 'node[type="tool"]',     style: { 'shape': 'rectangle', 'background-color': '#28313a' } },
+      { selector: 'node[type="artifact"]', style: { 'shape': 'ellipse', 'background-color': '#263a2b' } },
+      { selector: 'node[type="start"]',    style: { 'shape': 'round-rectangle', 'background-color': '#1e2a46' } },
+      { selector: 'node[type="end"]',      style: { 'shape': 'round-rectangle', 'background-color': '#1e2a46' } },
+
+      // Edges
+      { selector: 'edge', style: {
+        'curve-style': 'bezier','line-color':'var(--edge)','width':2,
+        'target-arrow-shape':'triangle','target-arrow-color':'var(--edge)',
+        'label': 'data(label)','font-size': 10,'text-rotation': 'autorotate','text-margin-y': -6
+      }},
+      { selector: 'edge[type="tool_call"]', style: { 'line-style': 'dotted', 'width': 2.5 } },
+      { selector: 'edge[type="write"]',     style: { 'line-color': '#7fdca7', 'target-arrow-color': '#7fdca7', 'width': 3 } },
+      { selector: 'edge[dashed = "true"]',  style: { 'line-style': 'dashed' } },
+    ],
+    layout: { name: 'dagre', rankDir: 'TB', nodeSep: 28, rankSep: 64, edgeSep: 12 }
+  });
+
+  function layoutAndSize() {
+    const padding = 50;
+    cy.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 28, rankSep: 64, edgeSep: 12 }).run();
+    const bb = cy.boundingBox({ includeLabels: true, includeNodes: true });
+    const w = bb.w + 2*padding, h = bb.h + 2*padding;
+
+    const lanes = [
+      { id: 'lane_pipeline', x: bb.x1 - padding, y: bb.y1 - padding, w: w * 0.55, h },
+      { id: 'lane_tools', x: bb.x1 - padding + w*0.58, y: bb.y1 - padding, w: w * 0.42, h: h * 0.6 },
+      { id: 'lane_artifacts', x: bb.x1 - padding + w*0.58, y: bb.y1 - padding + h*0.64, w: w * 0.42, h: h * 0.36 }
+    ];
+    for (const c of lanes) {
+      const n = cy.getElementById(c.id);
+      n.lock();
+      n.style({ 'width': c.w, 'height': c.h, 'background-color': 'rgba(255,255,255,0.02)' });
+      n.position({ x: c.x + c.w/2, y: c.y + c.h/2 });
+      n.move({ parent: null });
+      n.style('z-index', 1);
+    }
+    cy.fit(undefined, 40);
+  }
+
+  layoutAndSize();
+  cy.on('layoutstop', layoutAndSize);
+
+  document.getElementById('theme').addEventListener('change', (e) => {
+    document.body.setAttribute('data-theme', e.target.value);
+    cy.style().update();
+  });
+  document.getElementById('fit').addEventListener('click', () => cy.fit(undefined, 40));
+  document.getElementById('layout').addEventListener('click', layoutAndSize);
+  document.getElementById('export').addEventListener('click', (e) => {
+    const png = cy.png({ full: true, bg: getComputedStyle(document.body).getPropertyValue('--bg') });
+    e.currentTarget.href = png;
+  });
+  </script>
+</body>
+</html>

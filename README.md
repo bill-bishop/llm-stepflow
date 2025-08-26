@@ -52,7 +52,7 @@ node dist/src/examples/math_solve/run.js
 ```bash
 npm run build
 # Chat Completions (default):
-node dist/src/examples/prompt_only/run.js --prompt="Write a one-sentence pep talk."
+node dist/examples/prompt_only/run.js --prompt="Write a one-sentence pep talk."
 
 # Responses API:
 OPENAI_API_STYLE=responses node dist/src/examples/prompt_only/run.js --prompt="Summarize: why modular workflows rock."
@@ -63,7 +63,7 @@ OPENAI_API_STYLE=responses node dist/src/examples/prompt_only/run.js --prompt="S
 node dist/src/index.js --graph=src/examples/minimal/graph.json
 ```
 
-> Note: `tools/web.search` uses **Tavily**. Provide `TAVILY_API_KEY` to get results; otherwise it returns an empty list so PoC flows still run.
+> Note: `tools/web_search` uses **Tavily**. Provide `TAVILY_API_KEY` to get results; otherwise it returns an empty list so PoC flows still run.
 
 ---
 
@@ -101,9 +101,9 @@ src/
     fsStore.ts                  # persist artifacts under /runs/{run_id}/...
   tools/
     registry.ts                 # registers tools
-    web/search.ts               # Tavily-backed web.search({query,k})
-    cli/exec.ts                 # cli.exec({cmd,cwd,timeout_s})
-    http/request.ts             # http.request({url,method,headers,body})
+    web/search.ts               # Tavily-backed web_search({query,k})
+    cli/exec.ts                 # cli_exec({cmd,cwd,timeout_s})
+    http/request.ts             # http_request({url,method,headers,body})
   prompt/
     renderer.ts                 # renderMetaprompt(step, blackboard)
     templates/step.md           # optional prompt template
@@ -154,7 +154,7 @@ src/
 - `OPENAI_BASE_URL` — optional (default `https://api.openai.com/v1`).
 - `OPENAI_API_STYLE` — `chat` or `responses`.
 - `MODEL` — optional (default `gpt-4o-mini`).
-- `TAVILY_API_KEY` — required for real `web.search` results.
+- `TAVILY_API_KEY` — required for real `web_search` results.
 
 ---
 

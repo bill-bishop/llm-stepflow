@@ -5,7 +5,7 @@ import type { ToolSpec } from "../../types/tools.js";
 const execp = promisify(_exec);
 
 export const cliExec: ToolSpec = {
-  name: "cli.exec",
+  name: "cli_exec",
   input_schema: {
     cmd: "string (command to execute)",
     cwd: "string (optional working directory)",
