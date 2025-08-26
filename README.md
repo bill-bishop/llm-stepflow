@@ -8,8 +8,6 @@ A minimal, modular spine for **LLM‑planned, tool‑using workflows**. It ships
 - A simple **Blackboard** (append‑only KV with versioning)
 - **Example graphs** you can run immediately
 
-> This repo now includes the full `src/` scaffold plus the root files.
-
 ---
 
 ## Requirements
