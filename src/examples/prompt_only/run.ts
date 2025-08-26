@@ -6,7 +6,7 @@ import { OpenAIChatCompletions } from '../../llm/openai.js';
 import { OpenAIResponses } from '../../llm/openai_responses.js';
 import { buildToolRegistry } from '../../tools/registry.js';
 import { createBlackboard, write } from '../../blackboard/index.js';
-import graph from './graph.json' assert { type: 'json' };
+import graph from './graph.json' with { type: 'json' };
 
 function getArg(name: string, fallback?: string): string | undefined {
   const ix = process.argv.findIndex(a => a === name || a.startsWith(name + '='));
