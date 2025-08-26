@@ -1,7 +1,8 @@
 import type { CompletionArgs, CompletionOut } from "../types/llm.js";
 import type { LLMProvider } from "./provider.js";
 
-export class OpenAICompatible implements LLMProvider {
+/** Legacy Chat Completions adapter */
+export class OpenAIChatCompletions implements LLMProvider {
   constructor(private apiKey: string, private baseUrl = "https://api.openai.com/v1") {}
 
   async complete(args: CompletionArgs): Promise<CompletionOut> {
@@ -39,8 +40,8 @@ export class OpenAICompatible implements LLMProvider {
     const data = await res.json();
     const choice = data.choices?.[0];
     const msg = choice?.message ?? {};
-    const calls = (msg.tool_calls ?? []).map((c: any) => ({
-      id: c.id,
+    const calls = (msg.tool_calls ?? []).map((c: any, i: number) => ({
+      id: c.id || `toolcall_${i}`,
       name: c.function?.name,
       arguments: c.function?.arguments
     }));
@@ -52,3 +53,6 @@ export class OpenAICompatible implements LLMProvider {
     };
   }
 }
+
+/** Default export keeps backward compatibility (legacy) */
+export const OpenAICompatible = OpenAIChatCompletions;

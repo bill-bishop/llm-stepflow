@@ -130,3 +130,28 @@ src/
 ## License
 
 MIT
+
+
+### Choose OpenAI adapter
+
+Set `OPENAI_API_STYLE` to select the adapter:
+- `chat` (default) — uses the legacy **Chat Completions** endpoint `/v1/chat/completions`
+- `responses` — uses the newer **Responses** endpoint `/v1/responses`
+
+```bash
+# Chat Completions (default)
+OPENAI_API_STYLE=chat
+
+# Responses API
+OPENAI_API_STYLE=responses
+```
+
+### Web search
+
+This PoC uses **Tavily** for `web.search`. Set:
+
+- `TAVILY_API_KEY` — required to get real results
+- `TAVILY_BASE_URL` — optional (defaults to `https://api.tavily.com/search`)
+
+If no key is provided, the tool returns an empty result set (so flows still run).
+

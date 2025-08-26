@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { compileGraph } from './orchestrator/compiler.js';
 import { runGraph } from './orchestrator/run.js';
-import { OpenAICompatible } from './llm/openai.js';
+import { OpenAICompatible, OpenAIChatCompletions } from './llm/openai.js';
+import { OpenAIResponses } from './llm/openai_responses.js';
 import { buildToolRegistry } from './tools/registry.js';
 import { createBlackboard } from './blackboard/index.js';
 import type { StepGraph } from './types/contracts.js';
@@ -20,6 +21,7 @@ async function main() {
   const graphPath = resolve(process.cwd(), arg("--graph", "src/examples/minimal/graph.json")!);
   const model = process.env.MODEL || "gpt-4o-mini";
   const apiKey = process.env.OPENAI_API_KEY;
+  const style = (process.env.OPENAI_API_STYLE || "chat").toLowerCase(); // "chat" | "responses"
   if (!apiKey) {
     console.warn("[warn] OPENAI_API_KEY not set. Steps using the LLM will fail.");
   }
@@ -28,7 +30,13 @@ async function main() {
   const graph: StepGraph = JSON.parse(raw);
 
   const compiled = compileGraph(graph);
-  const provider = new OpenAICompatible(apiKey || "DUMMY", process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+  const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+
+  const provider =
+    style === "responses"
+      ? new OpenAIResponses(apiKey || "DUMMY", baseUrl)
+      : new OpenAIChatCompletions(apiKey || "DUMMY", baseUrl);
+
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
 
