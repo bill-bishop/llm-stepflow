@@ -32,18 +32,11 @@ function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
 
 export async function runGraph(opts: RunOptions) {
   const order = topoSort(opts.graph);
-  const runId = opts.runId || new Date().toISOString().replace(/[:.]/g, "-");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const runId = (opts.runId + '-'|| '') + timestamp;
   for (const stepId of order) {
     const step = opts.graph.steps[stepId];
     await runStep(step, { ...opts, runId });
-  }
-}
-
-async function runInjectedSubgraph(sub: StepGraph, opts: RunOptions) {
-  const order = topoSort(sub);
-  for (const sid of order) {
-    const s = sub.steps[sid];
-    await runStep(s, opts);
   }
 }
 
@@ -51,8 +44,6 @@ export async function runStep(step: StepContract, opts: RunOptions) {
   const { provider, tools, blackboard, model, runId } = opts;
   const toolDefs = toolDefsFromRegistry(tools);
   let messages = renderMetaprompt(step, blackboard);
-
-  const proposals: Record<string, any> = {};
 
   for (let i = 0; i < (opts.maxIterationsPerStep ?? 6); i++) {
     const llmArgs = {
@@ -74,7 +65,21 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       } catch {}
     }
 
+    // --- FIX: Push the assistant tool_call message BEFORE tool results ---
     if (out.tool_calls?.length) {
+      // Add the assistant message that requested the tools
+      messages.push({
+        // @ts-ignore (allow tool_calls passthrough for provider adapter)
+        role: "assistant",
+        content: out.content ?? "",
+        tool_calls: out.tool_calls.map(tc => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: tc.arguments || "{}" }
+        }))
+      } as any);
+
+      // Now invoke tools and append their results
       for (const call of out.tool_calls) {
         const spec = tools[call.name];
         if (!spec) {
@@ -89,21 +94,19 @@ export async function runStep(step: StepContract, opts: RunOptions) {
           try { writeJson(runId, step.step_id, `tool_${call.name}_${call.id}.json`, { args, result }); } catch {}
         }
 
-        if (call.name === "workflow_inject_subgraph" && (result?.output as any)?.handle) {
-          const h = (result.output as any).handle;
-          proposals[h] = result.output;
-        }
-
         messages.push({
           role: "tool",
           name: call.name,
           tool_call_id: call.id,
           content: JSON.stringify(result)
-        });
+        } as any);
       }
+      // Loop again so the model can consume the tool results
       continue;
     }
+    // -------------------------------------------------------------------
 
+    // Expect strict JSON outputs
     let parsed: any;
     try { parsed = JSON.parse(out.content || "{}"); }
     catch {
@@ -112,6 +115,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
+    // Write declared outputs to blackboard
     for (const field of Object.keys(step.outputs_schema)) {
       if (parsed[field] !== undefined) {
         write(blackboard, `${step.step_id}.${field}`, parsed[field]);
@@ -121,20 +125,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       try { writeJson(runId, step.step_id, `outputs.json`, parsed); } catch {}
     }
 
-    const handle = parsed?.subgraph_apply?.handle as string | undefined;
-    if (handle) {
-      const proposal = proposals[handle];
-      if (!proposal) {
-        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_error_${handle}.json`, { error: "handle not found in proposals" }); } catch {}
-      } else if (!proposal.approved) {
-        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_rejected_${handle}.json`, { issues: proposal.issues }); } catch {}
-      } else {
-        if (runId) try { writeJson(runId, step.step_id, `workflow_patch_${handle}.json`, { patch: proposal.patch, metadata: { reason: parsed?.reason || proposal?.reason } }); } catch {}
-        const sub: StepGraph = proposal.compiled_subgraph as StepGraph;
-        await runInjectedSubgraph(sub, opts);
-      }
-    }
-
+    // Verify & optional branching
     const verdict = verifyInvariants(step, blackboard);
     if (!verdict.pass) {
       const sub = branchFactory(verdict.intent || "", step, blackboard);

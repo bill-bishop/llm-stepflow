@@ -1,0 +1,23 @@
+{
+  "steps": {
+    "precheck": {
+      "step_id": "precheck",
+      "executor": "intelligent",
+      "goal": "If more research is required to answer the user's request properly, propose and apply a focused subflow; otherwise proceed. Return JSON only.",
+      "inputs": {
+        "required": [
+          "user_goal"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "decision": "string (applied_subgraph|not_needed)",
+        "subgraph_apply": "object (optional, include {handle} if applied)",
+        "notes": "string"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": []
+}

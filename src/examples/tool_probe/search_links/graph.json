@@ -1,0 +1,22 @@
+{
+  "steps": {
+    "news_digest": {
+      "step_id": "news_digest",
+      "executor": "intelligent",
+      "goal": "Answer the user's query with up-to-date facts and include working source URLs. Return JSON only.",
+      "inputs": {
+        "required": [
+          "user_query"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "digest_json": "string (JSON array of {title, url, snippet})",
+        "notes": "string (short method summary)"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": []
+}

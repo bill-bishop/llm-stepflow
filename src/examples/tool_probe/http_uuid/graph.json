@@ -1,0 +1,20 @@
+{
+  "steps": {
+    "fetch_uuid": {
+      "step_id": "fetch_uuid",
+      "executor": "intelligent",
+      "goal": "Fetch a live UUID from an external service and return it as JSON only.",
+      "inputs": {
+        "required": [],
+        "optional": []
+      },
+      "outputs_schema": {
+        "uuid": "string (value from response)",
+        "raw_json": "string (raw JSON body)"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": []
+}

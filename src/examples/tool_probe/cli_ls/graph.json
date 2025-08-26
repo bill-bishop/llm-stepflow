@@ -1,0 +1,20 @@
+{
+  "steps": {
+    "list_cwd": {
+      "step_id": "list_cwd",
+      "executor": "intelligent",
+      "goal": "Return the current working directory and a machine-readable list of files in it as JSON only.",
+      "inputs": {
+        "required": [],
+        "optional": []
+      },
+      "outputs_schema": {
+        "cwd": "string (absolute path)",
+        "files_json": "string (JSON array of file names)"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": []
+}
