@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export function saveArtifact(runId: string, stepId: string, fileName: string, content: string) {
   const dir = join("runs", runId, stepId);

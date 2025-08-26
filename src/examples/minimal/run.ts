@@ -1,14 +1,17 @@
 import 'dotenv/config';
 import { compileGraph } from '../../orchestrator/compiler.js';
 import { runGraph } from '../../orchestrator/run.js';
-import { OpenAICompatible } from '../../llm/openai.js';
+import { OpenAIChatCompletions } from '../../llm/openai.js';
+import { OpenAIResponses } from '../../llm/openai_responses.js';
 import { buildToolRegistry } from '../../tools/registry.js';
 import { createBlackboard } from '../../blackboard/index.js';
 import graph from './graph.json' assert { type: 'json' };
 
 async function main() {
   const compiled = compileGraph(graph);
-  const provider = new OpenAICompatible(process.env.OPENAI_API_KEY || "DUMMY", process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+  const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
+    ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+    : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
 

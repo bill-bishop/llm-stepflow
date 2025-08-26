@@ -3,7 +3,7 @@ import type { ToolDefForLLM } from "../types/llm.js";
 import type { ToolRegistry } from "../types/tools.js";
 import type { LLMProvider } from "../llm/provider.js";
 import { renderMetaprompt } from "../prompt/renderer.js";
-import { write, read, type Blackboard } from "../blackboard/index.js";
+import { write, type Blackboard } from "../blackboard/index.js";
 import { topoSort } from "./topo.js";
 import { verifyInvariants } from "./verify.js";
 import { branchFactory } from "./branchFactory.js";
@@ -69,7 +69,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
           content: JSON.stringify(result)
         });
       }
-      continue; // loop again; LLM now sees tool results
+      continue;
     }
 
     let parsed: any;
@@ -90,7 +90,6 @@ export async function runStep(step: StepContract, opts: RunOptions) {
     if (!verdict.pass) {
       const sub = branchFactory(verdict.intent || "", step, blackboard);
       if (Object.keys(sub.steps).length > 0) {
-        // naive: run subgraph immediately
         for (const subId of Object.keys(sub.steps)) {
           await runStep(sub.steps[subId], { ...opts });
         }

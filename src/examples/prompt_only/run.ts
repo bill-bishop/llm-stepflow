@@ -7,19 +7,25 @@ import { buildToolRegistry } from '../../tools/registry.js';
 import { createBlackboard, write } from '../../blackboard/index.js';
 import graph from './graph.json' assert { type: 'json' };
 
+function getArg(name: string, fallback?: string): string | undefined {
+  const ix = process.argv.findIndex(a => a === name || a.startsWith(name + '='));
+  if (ix === -1) return fallback;
+  const val = process.argv[ix];
+  if (val.includes('=')) return val.split('=')[1];
+  return process.argv[ix+1] ?? fallback;
+}
+
 async function main() {
   const compiled = compileGraph(graph);
+
+  const prompt = getArg('--prompt') || process.env.PROMPT || "Say hello in JSON.";
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
     ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
     : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
-
-  // Seed a toy problem_set so steps have inputs
-  write(blackboard, "problem_set", [
-    { id: 1, prompt: "Solve: 2x + 3 = 7" },
-    { id: 2, prompt: "Integrate: ∫ x dx" }
-  ]);
+  write(blackboard, "user_prompt", prompt);
 
   await runGraph({
     provider,

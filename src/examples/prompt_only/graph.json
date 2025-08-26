@@ -1,0 +1,21 @@
+{
+  "steps": {
+    "prompt_only": {
+      "step_id": "prompt_only",
+      "executor": "intelligent",
+      "goal": "Use the provided user_prompt as the task; return the result as a string.",
+      "inputs": {
+        "required": [
+          "user_prompt"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "result": "string"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": []
+}

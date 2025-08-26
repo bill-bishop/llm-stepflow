@@ -1,20 +1,13 @@
-import type { CompletionArgs, CompletionOut, ToolDefForLLM } from "../types/llm.js";
+import type { CompletionArgs, CompletionOut } from "../types/llm.js";
 import type { LLMProvider } from "./provider.js";
 
 /**
- * OpenAI "Responses" API adapter (beta / evolving). This aims for compatibility with the
- * provider-agnostic CompletionOut shape used by the orchestrator.
- *
- * Notes:
- * - We map chat-style messages to an "input" array.
- * - We pass function tools if provided.
- * - We attempt to extract assistant text and tool_calls from the response's output.
+ * OpenAI "Responses" API adapter.
  */
 export class OpenAIResponses implements LLMProvider {
   constructor(private apiKey: string, private baseUrl = "https://api.openai.com/v1") {}
 
   private toInput(messages: {role:string; content:string}[]) {
-    // Minimal mapping: array of role/content pairs; some providers accept {type:"text",text:...}
     return messages.map(m => ({ role: m.role, content: m.content }));
   }
 
@@ -34,10 +27,7 @@ export class OpenAIResponses implements LLMProvider {
       }));
       payload.tool_choice = args.tool_choice === "auto" ? "auto" : args.tool_choice;
     }
-    if (args.response_format) {
-      // Some providers accept a similar key; keep for compatibility
-      payload.response_format = args.response_format;
-    }
+    if (args.response_format) payload.response_format = args.response_format;
 
     const res = await fetch(url, {
       method: "POST",
@@ -54,23 +44,15 @@ export class OpenAIResponses implements LLMProvider {
     }
     const data: any = await res.json();
 
-    // Try a few shapes for content extraction
     let assistantText = "";
-    // Some SDKs expose consolidated output text:
     if (typeof data.output_text === "string") {
       assistantText = data.output_text;
     } else if (Array.isArray(data.output)) {
-      // Find last assistant message
       const msg = data.output.find((x: any) => x.role === "assistant") || data.output[data.output.length - 1];
       if (msg?.content) {
-        // content may be array of segments
         if (Array.isArray(msg.content)) {
-          const textSeg = msg.content.find((c: any) => c.type === "output_text" || c.type === "text");
-          if (textSeg?.text) assistantText = textSeg.text;
-          else {
-            // Fallback: concatenate text-like fields
-            assistantText = msg.content.map((c: any) => c.text || "").join("\n");
-          }
+          const seg = msg.content.find((c: any) => c.type === "output_text" || c.type === "text");
+          assistantText = seg?.text || msg.content.map((c: any) => c.text || "").join("\n");
         } else if (typeof msg.content === "string") {
           assistantText = msg.content;
         }
@@ -79,7 +61,6 @@ export class OpenAIResponses implements LLMProvider {
       assistantText = data.message.content;
     }
 
-    // Extract function/tool calls if present
     let tool_calls: { id: string; name: string; arguments: string; }[] | undefined;
     try {
       const toolSegments =

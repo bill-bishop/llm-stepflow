@@ -24,7 +24,6 @@ export const webSearch: ToolSpec = {
       return { name: this.name, ok: false, output: { items: [] }, error: "missing query" };
     }
     if (!apiKey) {
-      // Graceful fallback for PoC runs without a key
       return {
         name: this.name,
         ok: true,
@@ -35,14 +34,8 @@ export const webSearch: ToolSpec = {
     try {
       const res = await fetch(baseUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          api_key: apiKey,
-          query,
-          max_results: k
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKey, query, max_results: k })
       });
       const data = await res.json();
       const results = (data.results || data.data || []).map((r: any) => ({
