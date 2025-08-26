@@ -9,8 +9,8 @@ export function renderMetaprompt(step: StepContract, blackboard: Blackboard): Me
     content: [
       `You are a precise agent executing step_id=${step.step_id}.`,
       `Goal: ${step.goal}`,
-      `You MUST satisfy invariants: ${(step.invariants || []).join("; ") || "none"}`,
-      `Output strictly as JSON matching outputs_schema keys: ${Object.keys(step.outputs_schema).join(", ")}`
+      `Output strictly as JSON matching outputs_schema keys: ${Object.keys(step.outputs_schema).join(", ")}`,
+      (step.invariants && step.invariants.length > 0) ? `You MUST satisfy invariants: ${(step.invariants || []).join("; ") || "none"}` : ''
     ].join("\n")
   };
 

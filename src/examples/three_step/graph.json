@@ -1,0 +1,69 @@
+{
+  "steps": {
+    "step_a_capture": {
+      "step_id": "step_a_capture",
+      "executor": "intelligent",
+      "goal": "Capture and lightly normalize the user's input text. Return as JSON.",
+      "inputs": {
+        "required": [
+          "user_text"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "a_text": "string (normalized text)",
+        "a_notes": "string (what normalization you did)"
+      },
+      "determinism": "low",
+      "invariants": []
+    },
+    "step_b_reformat": {
+      "step_id": "step_b_reformat",
+      "executor": "intelligent",
+      "goal": "Reformat step A's output according to simple rules (e.g., Title Case). Return JSON.",
+      "inputs": {
+        "required": [
+          "step_a_capture.a_text"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "b_reformatted": "string (reformatted text)",
+        "b_rules": "string (brief note of rules applied)"
+      },
+      "determinism": "low",
+      "invariants": []
+    },
+    "step_c_summarize": {
+      "step_id": "step_c_summarize",
+      "executor": "intelligent",
+      "goal": "Summarize what was done using step A and step B outputs.",
+      "inputs": {
+        "required": [
+          "step_a_capture.a_text",
+          "step_b_reformat.b_reformatted"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "summary": "string (concise description of inputs and transformations)"
+      },
+      "determinism": "low",
+      "invariants": []
+    }
+  },
+  "edges": [
+    {
+      "from": "step_a_capture",
+      "to": "step_b_reformat"
+    },
+    {
+      "from": "step_a_capture",
+      "to": "step_c_summarize"
+    },
+    {
+      "from": "step_b_reformat",
+      "to": "step_c_summarize"
+    }
+  ]
+}
