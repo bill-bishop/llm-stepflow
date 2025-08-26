@@ -1,3 +1,4 @@
+// src/orchestrator/run.ts (duplicate tool-call suppression + proper assistant/tool flow)
 import type { StepGraph, StepContract } from "../types/contracts.js";
 import type { ToolDefForLLM } from "../types/llm.js";
 import type { ToolRegistry } from "../types/tools.js";
@@ -17,6 +18,7 @@ export interface RunOptions {
   model: string;
   maxIterationsPerStep?: number;
   runId?: string;
+  maxToolExecPerStep?: number; // default 6
 }
 
 function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
@@ -32,8 +34,7 @@ function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
 
 export async function runGraph(opts: RunOptions) {
   const order = topoSort(opts.graph);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const runId = (opts.runId + '-'|| '') + timestamp;
+  const runId = opts.runId || new Date().toISOString().replace(/[:.]/g, "-");
   for (const stepId of order) {
     const step = opts.graph.steps[stepId];
     await runStep(step, { ...opts, runId });
@@ -45,7 +46,12 @@ export async function runStep(step: StepContract, opts: RunOptions) {
   const toolDefs = toolDefsFromRegistry(tools);
   let messages = renderMetaprompt(step, blackboard);
 
-  for (let i = 0; i < (opts.maxIterationsPerStep ?? 6); i++) {
+  // Cache of tool-call results within this step to prevent loops
+  const seenCalls = new Map<string, any>();
+  let toolExecCount = 0;
+  const maxToolExec = opts.maxToolExecPerStep ?? 6;
+
+  for (let i = 0; i < (opts.maxIterationsPerStep ?? 8); i++) {
     const llmArgs = {
       model,
       messages,
@@ -65,11 +71,10 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       } catch {}
     }
 
-    // --- FIX: Push the assistant tool_call message BEFORE tool results ---
     if (out.tool_calls?.length) {
       // Add the assistant message that requested the tools
       messages.push({
-        // @ts-ignore (allow tool_calls passthrough for provider adapter)
+        // @ts-ignore passthrough
         role: "assistant",
         content: out.content ?? "",
         tool_calls: out.tool_calls.map(tc => ({
@@ -79,16 +84,56 @@ export async function runStep(step: StepContract, opts: RunOptions) {
         }))
       } as any);
 
-      // Now invoke tools and append their results
       for (const call of out.tool_calls) {
+        const sig = `${call.name}::${call.arguments ?? ""}`;
+
+        // If we've executed this exact call before, replay cached result (no external exec)
+        if (seenCalls.has(sig)) {
+          const cached = seenCalls.get(sig);
+          messages.push({
+            role: "tool",
+            name: call.name,
+            tool_call_id: call.id,
+            content: JSON.stringify({ ...cached, note: "reused_cached_result" })
+          } as any);
+          continue;
+        }
+
+        // Budget guard to prevent infinite loops
+        if (toolExecCount >= maxToolExec) {
+          const synthetic = {
+            name: call.name,
+            ok: false,
+            error: "max_tool_exec_per_step_exceeded",
+            output: {}
+          };
+          messages.push({
+            role: "tool",
+            name: call.name,
+            tool_call_id: call.id,
+            content: JSON.stringify(synthetic)
+          } as any);
+          continue;
+        }
+
+        // Execute tool
         const spec = tools[call.name];
         if (!spec) {
-          messages.push({ role: "assistant", content: `Requested unknown tool: ${call.name}` });
+          const synthetic = { name: call.name, ok: false, error: "unknown_tool", output: {} };
+          messages.push({ role: "tool", name: call.name, tool_call_id: call.id, content: JSON.stringify(synthetic) } as any);
           continue;
         }
         let args: any = {};
         try { args = JSON.parse(call.arguments || "{}"); } catch {}
-        const result = await spec.invoke(args);
+
+        let result: any;
+        try {
+          result = await spec.invoke(args);
+        } catch (e: any) {
+          result = { name: call.name, ok: false, error: String(e?.message || e), output: {} };
+        }
+        toolExecCount++;
+        seenCalls.set(sig, result);
 
         if (runId) {
           try { writeJson(runId, step.step_id, `tool_${call.name}_${call.id}.json`, { args, result }); } catch {}
@@ -101,17 +146,16 @@ export async function runStep(step: StepContract, opts: RunOptions) {
           content: JSON.stringify(result)
         } as any);
       }
-      // Loop again so the model can consume the tool results
+      // Let the model consume the tool results
       continue;
     }
-    // -------------------------------------------------------------------
 
     // Expect strict JSON outputs
     let parsed: any;
     try { parsed = JSON.parse(out.content || "{}"); }
     catch {
       messages.push({ role: "assistant", content: out.content ?? "" });
-      messages.push({ role: "user", content: "Re-emit outputs as strict JSON only, no prose." });
+      messages.push({ role: "user", content: "Return outputs as strict JSON only, no prose." });
       continue;
     }
 
