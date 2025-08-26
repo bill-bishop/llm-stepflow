@@ -1,0 +1,22 @@
+{
+  "steps": {
+    "hello_world": {
+      "step_id": "hello_world",
+      "executor": "intelligent",
+      "goal": "Emit a friendly JSON greeting object.",
+      "inputs": {
+        "required": [],
+        "optional": []
+      },
+      "outputs_schema": {
+        "greeting": "string",
+        "confidence": "number"
+      },
+      "determinism": "low",
+      "invariants": [
+        "confidence>=0.5"
+      ]
+    }
+  },
+  "edges": []
+}

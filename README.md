@@ -1,79 +1,129 @@
 # llm-stepflow
 
-A minimal, modular spine for **LLM-planned, tool-using workflows**. It includes contracts for steps, a blackboard for artifacts, a prompt renderer, an orchestrator loop (with tool-calling and branching), and an OpenAI‑compatible provider — ready for you to drop in `src/` files.
+A minimal, modular spine for **LLM‑planned, tool‑using workflows**. It ships with:
+- Strong **types/contracts** for steps and graphs
+- An **OpenAI‑compatible** chat completions adapter
+- A strict **metaprompt renderer** (JSON‑only outputs)
+- An **orchestrator** that executes steps, handles tool‑calling, and can branch
+- A simple **Blackboard** (append‑only KV with versioning)
+- **Example graphs** you can run immediately
 
-> This archive only contains the **root files**. Add the folders (`src/`, `tools/`, etc.) from our plan to start running demos.
-
----
-
-## Quick start
-
-1. **Install deps**
-   ```bash
-   npm i
-   ```
-
-2. **Set environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env and set OPENAI_API_KEY (and optionally OPENAI_BASE_URL)
-   ```
-
-3. **Add source files (next)**
-   Create the directories from the proposed layout (`src/`, `src/llm/`, `src/orchestrator/`, etc.) and paste in the code we discussed. Then:
-   ```bash
-   npm run build
-   npm run demo
-   ```
+> This repo now includes the full `src/` scaffold plus the root files.
 
 ---
 
-## Design at a glance (what you’ll add under `src/`)
+## Requirements
+- Node.js **>= 20**
+- A model/API endpoint compatible with the *chat completions* schema
+- An API key in your environment
 
-- **types/contracts.ts** — `StepGraph`, `StepContract`, `ExecutorType`.
-- **blackboard/** — append‑only KV with versioning.
-- **llm/provider.ts & llm/openai.ts** — adapter wrapping a `chat completions` style `getCompletions()`.
-- **prompt/renderer.ts** — strict interpolation; JSON‑only outputs.
-- **tools/** — uniform adapters: `web.search`, `cli.exec`, `http.request`.
-- **orchestrator/** — `runStep`, invariant verification, branching, budgets.
-- **workflows/library/** — reusable subgraphs (e.g., `deepen_search`).
+---
 
-### Example minimal runner (you’ll create later)
-```ts
-// src/examples/minimal/run.ts
-import { runGraph } from "../../orchestrator/run";
-import { compileGraph } from "../../orchestrator/compiler";
-import { OpenAICompatible } from "../../llm/openai";
-import { buildToolRegistry } from "../../tools/registry";
+## Install
 
-const provider = new OpenAICompatible(process.env.OPENAI_API_KEY!);
-const graph = require("./graph.json");
-const compiled = compileGraph(graph);
-
-await runGraph({
-  provider,
-  tools: buildToolRegistry(),
-  graph: compiled,
-  model: process.env.MODEL || "gpt-4o-mini"
-});
+```bash
+npm i
 ```
+
+### Configure environment
+```bash
+cp .env.example .env
+# Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL, MODEL)
+```
+
+---
+
+## Run examples
+
+### Minimal “hello” graph
+```bash
+npm run build
+node dist/src/examples/minimal/run.js
+```
+
+### Math‑solve skeleton (uses the contracts & flow, not a real solver yet)
+```bash
+npm run build
+node dist/src/examples/math_solve/run.js
+```
+
+### CLI entry (arbitrary graph)
+```bash
+node dist/src/index.js --graph=src/examples/minimal/graph.json
+```
+
+> Note: `tools/web.search` is a stub that returns an empty list (OK for PoC). Swap it for a real search adapter when you’re ready.
+
+---
+
+## Project structure
+
+```
+src/
+  index.ts                      # CLI entry: load graph → compile → run
+  types/
+    contracts.ts                # StepGraph, StepContract, ExecutorType
+    llm.ts                      # Message, CompletionArgs/Out, ToolDefForLLM
+    tools.ts                    # ToolSpec, ToolRegistry, ToolCall/Result
+  llm/
+    provider.ts                 # LLMProvider interface
+    openai.ts                   # OpenAICompatible adapter
+  blackboard/
+    index.ts                    # in‑memory KV with versioning
+    fsStore.ts                  # persist artifacts under /runs/{run_id}/...
+  tools/
+    registry.ts                 # registers tools
+    web/search.ts               # web.search({query,k}) — STUB
+    cli/exec.ts                 # cli.exec({cmd,cwd,timeout_s})
+    http/request.ts             # http.request({url,method,headers,body})
+  prompt/
+    renderer.ts                 # renderMetaprompt(step, blackboard)
+    templates/step.md           # optional prompt template
+  orchestrator/
+    run.ts                      # runGraph(), runStep() with tool‑calling
+    verify.ts                   # verifyInvariants()
+    topo.ts                     # topo sort / dep checks
+    budget.ts                   # token/call/wall‑time scaffolding
+    planner.ts                  # toy planner example
+    compiler.ts                 # validations / defaults
+    branchFactory.ts            # intent → subgraph injection
+    materialize.ts              # package fields → files
+  workflows/library/
+    deepen_search.graph.json    # reusable subgraph (example)
+    resolve_discrepancy.graph.json
+  examples/
+    minimal/                    # tiny 1‑step graph
+    math_solve/                 # outline‑based math flow (skeleton)
+  tests/
+    *.spec.ts                   # vitest smoke tests
+```
+
+---
+
+## Extending
+
+- **Add tools:** implement `ToolSpec` in `src/tools/*` and register in `tools/registry.ts`.
+- **Real web search:** replace `web/search.ts` with an engine (Bing, Tavily, SerpAPI, custom) and return `{items:[{url,title,snippet}]}`.
+- **Branch intents:** add cases in `orchestrator/branchFactory.ts` or import ready‑made subgraphs under `workflows/library/`.
+- **Strict schemas:** tighten `outputs_schema` and `invariants` to make steps more deterministic.
+- **Observability:** persist prompts/responses per step under `/runs/{run_id}/{step}/` using `blackboard/fsStore.ts`.
 
 ---
 
 ## Scripts
 
 - `npm run build` — compile TypeScript to `dist/`
-- `npm run start` — run `dist/src/index.js` (your CLI entry)
-- `npm run demo` — run the minimal example once you add it
-- `npm run test` — run unit tests (once you add them)
+- `npm run start` — run the CLI entry (`dist/src/index.js`)
+- `npm run demo` — run the minimal example (`dist/src/examples/minimal/run.js`)
+- `npm run test` — run unit tests (vitest)
 
 ---
 
 ## Environment
 
-- `OPENAI_API_KEY` — required.
-- `OPENAI_BASE_URL` — optional (defaults to `https://api.openai.com/v1`).
-- `MODEL` — optional (defaults to `gpt-4o-mini`).
+- `OPENAI_API_KEY` — required for LLM calls.
+- `OPENAI_BASE_URL` — optional (default `https://api.openai.com/v1`).
+- `MODEL` — optional (default `gpt-4o-mini`).
 
 ---
 

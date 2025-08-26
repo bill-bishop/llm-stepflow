@@ -1,0 +1,28 @@
+{
+  "steps": {
+    "search_more": {
+      "step_id": "search_more",
+      "executor": "intelligent",
+      "goal": "Find additional high-quality sources to raise confidence.",
+      "inputs": {
+        "required": [
+          "search_background.notes"
+        ],
+        "optional": [
+          "workflow_definition"
+        ]
+      },
+      "outputs_schema": {
+        "sources": "string[]",
+        "confidence": "number",
+        "notes": "string"
+      },
+      "determinism": "low",
+      "invariants": [
+        "len(sources)>=3",
+        "confidence>=0.75"
+      ]
+    }
+  },
+  "edges": []
+}

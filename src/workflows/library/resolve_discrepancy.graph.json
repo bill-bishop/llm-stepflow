@@ -1,0 +1,24 @@
+{
+  "steps": {
+    "resolve_discrepancy": {
+      "step_id": "resolve_discrepancy",
+      "executor": "intelligent",
+      "goal": "Resolve conflicting facts by reconciling sources or flagging for review.",
+      "inputs": {
+        "required": [
+          "extract_facts.facts"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "resolution": "string",
+        "confidence": "number"
+      },
+      "determinism": "low",
+      "invariants": [
+        "confidence>=0.7"
+      ]
+    }
+  },
+  "edges": []
+}

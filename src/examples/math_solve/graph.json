@@ -1,0 +1,71 @@
+{
+  "steps": {
+    "define_problem_scope_and_criteria": {
+      "step_id": "define_problem_scope_and_criteria",
+      "executor": "intelligent",
+      "goal": "Specify problem set scope, correctness rules, verification methods, and presentation requirements.",
+      "inputs": {
+        "required": [
+          "problem_set"
+        ],
+        "optional": [
+          "workflow_definition"
+        ]
+      },
+      "outputs_schema": {
+        "acceptance_criteria": "object",
+        "verification_methods": "string[]",
+        "presentation_specs": "object",
+        "evaluation_tolerances": "object",
+        "constants_policy": "object"
+      },
+      "determinism": "low"
+    },
+    "normalize_and_disambiguate_problems": {
+      "step_id": "normalize_and_disambiguate_problems",
+      "executor": "procedural",
+      "goal": "Convert raw problems to canonical structured forms with explicit assumptions.",
+      "inputs": {
+        "required": [
+          "problem_set"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "canonical_problems": "object[]",
+        "normalization_log": "object[]"
+      },
+      "determinism": "high"
+    },
+    "solve_with_stepwise_derivations": {
+      "step_id": "solve_with_stepwise_derivations",
+      "executor": "procedural",
+      "goal": "Compute candidate solutions and ordered derivations.",
+      "inputs": {
+        "required": [
+          "normalize_and_disambiguate_problems.canonical_problems"
+        ],
+        "optional": [
+          "define_problem_scope_and_criteria.constants_policy"
+        ]
+      },
+      "outputs_schema": {
+        "candidate_solutions": "object[]",
+        "derivations": "object[]",
+        "solution_metadata": "object[]",
+        "compute_trace": "object[]"
+      },
+      "determinism": "high"
+    }
+  },
+  "edges": [
+    {
+      "from": "define_problem_scope_and_criteria",
+      "to": "normalize_and_disambiguate_problems"
+    },
+    {
+      "from": "normalize_and_disambiguate_problems",
+      "to": "solve_with_stepwise_derivations"
+    }
+  ]
+}
