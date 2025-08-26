@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { compileGraph } from '../../orchestrator/compiler.js';
+import type { StepGraph } from '../../types/contracts.js';
 import { runGraph } from '../../orchestrator/run.js';
 import { OpenAIChatCompletions } from '../../llm/openai.js';
 import { OpenAIResponses } from '../../llm/openai_responses.js';
@@ -8,7 +9,7 @@ import { createBlackboard, write } from '../../blackboard/index.js';
 import graph from './graph.json' assert { type: 'json' };
 
 async function main() {
-  const compiled = compileGraph(graph);
+  const compiled = compileGraph(graph as unknown as StepGraph);
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
     ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
     : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');

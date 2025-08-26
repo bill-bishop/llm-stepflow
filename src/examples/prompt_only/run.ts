@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { compileGraph } from '../../orchestrator/compiler.js';
+import type { StepGraph } from '../../types/contracts.js';
 import { runGraph } from '../../orchestrator/run.js';
 import { OpenAIChatCompletions } from '../../llm/openai.js';
 import { OpenAIResponses } from '../../llm/openai_responses.js';
@@ -16,7 +17,7 @@ function getArg(name: string, fallback?: string): string | undefined {
 }
 
 async function main() {
-  const compiled = compileGraph(graph);
+  const compiled = compileGraph(graph as unknown as StepGraph);
 
   const prompt = getArg('--prompt') || process.env.PROMPT || "Say hello in JSON.";
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
