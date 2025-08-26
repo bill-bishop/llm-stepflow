@@ -16,12 +16,12 @@ export interface RunOptions {
   blackboard: Blackboard;
   model: string;
   maxIterationsPerStep?: number;
-  runId?: string; // NEW: persistent artifacts under runs/{runId}/{step}/
+  runId?: string;
 }
 
 function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
   return Object.values(reg).map(t => ({
-    name: t.name, // NOTE: names must already match ^[a-zA-Z0-9_-]+$
+    name: t.name,
     description: `Adapter for ${t.name}`,
     parameters: {
       type: "object",
@@ -39,10 +39,20 @@ export async function runGraph(opts: RunOptions) {
   }
 }
 
+async function runInjectedSubgraph(sub: StepGraph, opts: RunOptions) {
+  const order = topoSort(sub);
+  for (const sid of order) {
+    const s = sub.steps[sid];
+    await runStep(s, opts);
+  }
+}
+
 export async function runStep(step: StepContract, opts: RunOptions) {
   const { provider, tools, blackboard, model, runId } = opts;
   const toolDefs = toolDefsFromRegistry(tools);
   let messages = renderMetaprompt(step, blackboard);
+
+  const proposals: Record<string, any> = {};
 
   for (let i = 0; i < (opts.maxIterationsPerStep ?? 6); i++) {
     const llmArgs = {
@@ -57,7 +67,6 @@ export async function runStep(step: StepContract, opts: RunOptions) {
 
     const out = await provider.complete(llmArgs);
 
-    // Persist request/response per iteration
     if (runId) {
       try {
         writeJson(runId, step.step_id, `iter_${i}_request.json`, { messages, llmArgs });
@@ -76,9 +85,13 @@ export async function runStep(step: StepContract, opts: RunOptions) {
         try { args = JSON.parse(call.arguments || "{}"); } catch {}
         const result = await spec.invoke(args);
 
-        // Persist each tool call/return
         if (runId) {
           try { writeJson(runId, step.step_id, `tool_${call.name}_${call.id}.json`, { args, result }); } catch {}
+        }
+
+        if (call.name === "workflow_inject_subgraph" && (result?.output as any)?.handle) {
+          const h = (result.output as any).handle;
+          proposals[h] = result.output;
         }
 
         messages.push({
@@ -91,7 +104,6 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
-    // Expect strict JSON outputs
     let parsed: any;
     try { parsed = JSON.parse(out.content || "{}"); }
     catch {
@@ -100,7 +112,6 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
-    // Write declared outputs to blackboard
     for (const field of Object.keys(step.outputs_schema)) {
       if (parsed[field] !== undefined) {
         write(blackboard, `${step.step_id}.${field}`, parsed[field]);
@@ -110,7 +121,20 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       try { writeJson(runId, step.step_id, `outputs.json`, parsed); } catch {}
     }
 
-    // Verify & optional branching
+    const handle = parsed?.subgraph_apply?.handle as string | undefined;
+    if (handle) {
+      const proposal = proposals[handle];
+      if (!proposal) {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_error_${handle}.json`, { error: "handle not found in proposals" }); } catch {}
+      } else if (!proposal.approved) {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_rejected_${handle}.json`, { issues: proposal.issues }); } catch {}
+      } else {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_patch_${handle}.json`, { patch: proposal.patch, metadata: { reason: parsed?.reason || proposal?.reason } }); } catch {}
+        const sub: StepGraph = proposal.compiled_subgraph as StepGraph;
+        await runInjectedSubgraph(sub, opts);
+      }
+    }
+
     const verdict = verifyInvariants(step, blackboard);
     if (!verdict.pass) {
       const sub = branchFactory(verdict.intent || "", step, blackboard);
