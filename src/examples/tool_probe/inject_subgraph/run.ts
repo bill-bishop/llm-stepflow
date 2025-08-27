@@ -18,13 +18,14 @@ async function main() {
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
 
-  const goal = process.env.USER_GOAL || 'Find the latest release version of Node.js from two different sources; if they disagree, reconcile and output the consensus.';
+  const goal = process.env.USER_GOAL || 'Find the latest Node.js LTS version from two sources and summarize differences.';
   write(blackboard, 'user_goal', goal);
 
   await runGraph({
     provider, tools, graph: compiled, blackboard,
     model: process.env.MODEL || 'gpt-4o-mini',
-    runId: process.env.RUN_ID || 'probe-inject'
+    runId: process.env.RUN_ID || 'probe-inject-forced',
+    maxToolExecPerStep: Number(process.env.MAX_TOOL_EXEC_PER_STEP || 8)
   });
 
   console.log('\n[Blackboard outputs]');

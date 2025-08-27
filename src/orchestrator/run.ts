@@ -1,9 +1,7 @@
 // src/orchestrator/run.ts
-// Adds descriptive phase labels for each iteration ("iter # — …") alongside step logging.
-// Env flags:
-//   LOG_STEPS=1 (default)  → print step start/iter/done
-//   LOG_TOOLS=0 (default)  → set to 1 to print tool calls
-//   QUIET=1                → suppress all logging
+// Hardened: ensures assistant tool_calls are always followed by tool replies immediately,
+// preventing API 400s even if something interrupts the normal tool-exec path.
+// Includes timing logs, duplicate-call cache, subgraph apply, and coaching nudges.
 
 import type { StepGraph, StepContract } from "../types/contracts.js";
 import type { ToolDefForLLM } from "../types/llm.js";
@@ -24,7 +22,7 @@ export interface RunOptions {
   model: string;
   maxIterationsPerStep?: number;
   runId?: string;
-  maxToolExecPerStep?: number; // default 6
+  maxToolExecPerStep?: number;
 }
 
 const COLOR = {
@@ -40,6 +38,8 @@ const QUIET = process.env.QUIET === "1";
 const LOG_STEPS = !QUIET && (process.env.LOG_STEPS ?? "1") !== "0";
 const LOG_TOOLS = !QUIET && (process.env.LOG_TOOLS ?? "0") === "1";
 
+const fmtMs = (ms: number) => `${Math.round(ms)}ms`;
+
 function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
   return Object.values(reg).map(t => ({
     name: t.name,
@@ -51,18 +51,60 @@ function toolDefsFromRegistry(reg: ToolRegistry): ToolDefForLLM[] {
   }));
 }
 
+// Ensure that every assistant message with tool_calls has tool replies placed immediately after it.
+function enforceToolReplyInvariant(messages: any[]) {
+  // Scan from the end to catch the most recent assistant tool_call
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role === "assistant" && Array.isArray((m as any).tool_calls) && (m as any).tool_calls.length) {
+      const ids = (m as any).tool_calls.map((tc: any) => tc.id);
+      let j = i + 1;
+      let done = true;
+      for (const id of ids) {
+        const hasReplyAtJ = messages[j]?.role === "tool" && (messages[j] as any).tool_call_id === id;
+        if (!hasReplyAtJ) { done = false; break; }
+        j++;
+      }
+      if (!done) {
+        // Synthesize minimal error replies and insert them immediately after the assistant message.
+        const syntheticReplies = ids.map((id: string) => ({
+          role: "tool",
+          name: "synth_missing_reply",
+          tool_call_id: id,
+          content: JSON.stringify({ name: "synth_missing_reply", ok: false, error: "missing_tool_result", output: {} })
+        }));
+        messages.splice(i + 1, 0, ...syntheticReplies);
+      }
+      // Only fix the most recent block; earlier ones are already fixed or irrelevant
+      break;
+    }
+  }
+}
+
 export async function runGraph(opts: RunOptions) {
   const order = topoSort(opts.graph);
   const runId = opts.runId || new Date().toISOString().replace(/[:.]/g, "-");
   let idx = 0;
   for (const stepId of order) {
     const step = opts.graph.steps[stepId];
+    const stepStart = Date.now();
     if (LOG_STEPS) {
       const goal = (step.goal || "").slice(0, 96);
       console.log(`\n${COLOR.cyan("▶ step")} ${++idx}/${order.length} ${stepId} ${goal ? COLOR.gray("— " + goal) : ""}`);
     }
     await runStep(step, { ...opts, runId });
-    if (LOG_STEPS) console.log(`${COLOR.green("✓ done")} ${stepId}`);
+    if (LOG_STEPS) {
+      const stepMs = Date.now() - stepStart;
+      console.log(`${COLOR.green("✓ done")} ${stepId} ${COLOR.gray("(" + fmtMs(stepMs) + ")")}`);
+    }
+  }
+}
+
+async function runInjectedSubgraph(sub: StepGraph, opts: RunOptions) {
+  const order = topoSort(sub);
+  for (const sid of order) {
+    const s = sub.steps[sid];
+    await runStep(s, opts);
   }
 }
 
@@ -71,13 +113,17 @@ export async function runStep(step: StepContract, opts: RunOptions) {
   const toolDefs = toolDefsFromRegistry(tools);
   let messages = renderMetaprompt(step, blackboard);
 
-  // Cache of tool-call results within this step to prevent loops
   const seenCalls = new Map<string, any>();
+  const proposals: Record<string, any> = {};
   let toolExecCount = 0;
   const maxToolExec = opts.maxToolExecPerStep ?? 6;
 
   for (let i = 0; i < (opts.maxIterationsPerStep ?? 8); i++) {
+    const iterStart = Date.now();
     if (LOG_STEPS) console.log(COLOR.gray(`  iter ${i + 1} — thinking`));
+
+    // Guard: ensure previous iteration didn't leave an assistant tool_call without replies
+    enforceToolReplyInvariant(messages);
 
     const llmArgs = {
       model,
@@ -89,7 +135,9 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       max_tokens: 800
     } as const;
 
+    const t0 = Date.now();
     const out = await provider.complete(llmArgs);
+    const thinkMs = Date.now() - t0;
 
     if (runId) {
       try {
@@ -99,11 +147,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
     }
 
     if (out.tool_calls?.length) {
-      if (LOG_STEPS) {
-        const names = out.tool_calls.map(tc => tc.name).join(", ");
-        console.log(COLOR.magenta(`  iter ${i + 1} — tool_call → ${names}`));
-      }
-      // Add the assistant message that requested the tools
+      const names = out.tool_calls.map(tc => tc.name).join(", ");
       messages.push({
         // @ts-ignore passthrough
         role: "assistant",
@@ -115,78 +159,79 @@ export async function runStep(step: StepContract, opts: RunOptions) {
         }))
       } as any);
 
+      let toolsMsTotal = 0;
+
       for (const call of out.tool_calls) {
         const sig = `${call.name}::${call.arguments ?? ""}`;
 
-        // Optional console logging for tools
         if (LOG_TOOLS) {
           let argsPreview = "";
           try { argsPreview = JSON.stringify(JSON.parse(call.arguments || "{}")); } catch { argsPreview = String(call.arguments || ""); }
           if (argsPreview.length > 140) argsPreview = argsPreview.slice(0, 140) + "…";
-          console.log(COLOR.yellow(`    ↳ tool ${call.name}(${argsPreview})`));
+          process.stdout.write(COLOR.yellow(`    ↳ tool ${call.name}(${argsPreview}) `));
         }
 
-        // If we've executed this exact call before, replay cached result (no external exec)
         if (seenCalls.has(sig)) {
           const cached = seenCalls.get(sig);
-          messages.push({
+          messages.splice(messages.length, 0, {
             role: "tool",
             name: call.name,
             tool_call_id: call.id,
             content: JSON.stringify({ ...cached, note: "reused_cached_result" })
           } as any);
+          if (LOG_TOOLS) console.log(COLOR.gray(`[cache]`));
           continue;
         }
 
-        // Budget guard to prevent infinite loops
         if (toolExecCount >= maxToolExec) {
-          const synthetic = {
-            name: call.name,
-            ok: false,
-            error: "max_tool_exec_per_step_exceeded",
-            output: {}
-          };
-          messages.push({
-            role: "tool",
-            name: call.name,
-            tool_call_id: call.id,
-            content: JSON.stringify(synthetic)
-          } as any);
+          const synthetic = { name: call.name, ok: false, error: "max_tool_exec_per_step_exceeded", output: {} };
+          messages.splice(messages.length, 0, { role: "tool", name: call.name, tool_call_id: call.id, content: JSON.stringify(synthetic) } as any);
+          if (LOG_TOOLS) console.log(COLOR.gray(`[skipped: budget]`));
           continue;
         }
 
-        // Execute tool
         const spec = tools[call.name];
-        if (!spec) {
-          const synthetic = { name: call.name, ok: false, error: "unknown_tool", output: {} };
-          messages.push({ role: "tool", name: call.name, tool_call_id: call.id, content: JSON.stringify(synthetic) } as any);
-          continue;
-        }
-        let args: any = {};
-        try { args = JSON.parse(call.arguments || "{}"); } catch {}
-
         let result: any;
-        try {
-          result = await spec.invoke(args);
-        } catch (e: any) {
-          result = { name: call.name, ok: false, error: String(e?.message || e), output: {} };
+        if (!spec) {
+          result = { name: call.name, ok: false, error: "unknown_tool", output: {} };
+        } else {
+          let args: any = {};
+          try { args = JSON.parse(call.arguments || "{}"); } catch {}
+          const tTool0 = Date.now();
+          try { result = await spec.invoke(args); }
+          catch (e: any) { result = { name: call.name, ok: false, error: String(e?.message || e), output: {} }; }
+          const toolMs = Date.now() - tTool0;
+          toolsMsTotal += toolMs;
+          if (LOG_TOOLS) console.log(COLOR.gray(`[${fmtMs(toolMs)}]`));
         }
+
         toolExecCount++;
         seenCalls.set(sig, result);
 
-        if (runId) {
-          try { writeJson(runId, step.step_id, `tool_${call.name}_${call.id}.json`, { args, result }); } catch {}
+        // Capture proposals for later application
+        if (call.name === "workflow_inject_subgraph") {
+          const handle = (result?.output as any)?.handle;
+          if (handle) proposals[handle] = (result?.output as any);
         }
 
-        messages.push({
+        // Push the tool reply immediately (preserve adjacency)
+        messages.splice(messages.length, 0, {
           role: "tool",
           name: call.name,
           tool_call_id: call.id,
           content: JSON.stringify(result)
         } as any);
       }
-      if (LOG_STEPS) console.log(COLOR.gray(`  iter ${i + 1} — consuming tool results`));
-      // Let the model consume the tool results
+
+      const iterMs = Date.now() - iterStart;
+      if (LOG_STEPS) console.log(COLOR.magenta(`  iter ${i + 1} — tool_call → ${names} ${COLOR.gray("(" + fmtMs(iterMs) + "; model " + fmtMs(thinkMs) + ", tools " + fmtMs(toolsMsTotal) + ")")}`));
+
+      // Optional nudge to finalize with subgraph_apply
+      const handles = Object.keys(proposals);
+      if (handles.length > 0) {
+        const last = handles[handles.length - 1];
+        messages.push({ role: "user", content: `If approved, return strict JSON with "decision":"applied_subgraph", "subgraph_apply":{"handle":"${last}"}, and "notes". Do not call more tools.` });
+      }
       continue;
     }
 
@@ -200,7 +245,7 @@ export async function runStep(step: StepContract, opts: RunOptions) {
       continue;
     }
 
-    // Write declared outputs to blackboard
+    // Persist outputs
     const written: string[] = [];
     for (const field of Object.keys(step.outputs_schema)) {
       if (parsed[field] !== undefined) {
@@ -208,16 +253,30 @@ export async function runStep(step: StepContract, opts: RunOptions) {
         written.push(field);
       }
     }
-    if (runId) {
-      try { writeJson(runId, step.step_id, `outputs.json`, parsed); } catch {}
-    }
-    if (LOG_STEPS && written.length) {
-      console.log(COLOR.green(`  iter ${i + 1} — wrote: ${written.join(", ")}`));
-    } else if (LOG_STEPS) {
-      console.log(COLOR.green(`  iter ${i + 1} — wrote: (none)`));
+    if (runId) { try { writeJson(runId, step.step_id, `outputs.json`, parsed); } catch {} }
+
+    // Apply subgraph if requested
+    const handle = parsed?.subgraph_apply?.handle as string | undefined;
+    if (handle) {
+      const proposal = proposals[handle];
+      if (!proposal) {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_error_${handle}.json`, { error: "handle not found in proposals" }); } catch {}
+      } else if (!proposal.approved) {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_apply_rejected_${handle}.json`, { issues: proposal.issues }); } catch {}
+      } else {
+        if (runId) try { writeJson(runId, step.step_id, `workflow_patch_${handle}.json`, { patch: proposal.patch, metadata: { reason: parsed?.reason || proposal?.reason } }); } catch {}
+        const sub: StepGraph = proposal.compiled_subgraph as StepGraph;
+        await runInjectedSubgraph(sub, opts);
+      }
     }
 
-    // Verify & optional branching
+    const iterMs = Date.now() - iterStart;
+    if (LOG_STEPS && written.length) {
+      console.log(COLOR.green(`  iter ${i + 1} — wrote: ${written.join(", ")} ${COLOR.gray("(" + fmtMs(iterMs) + "; model " + fmtMs(thinkMs) + ")")}`));
+    } else if (LOG_STEPS) {
+      console.log(COLOR.green(`  iter ${i + 1} — wrote: (none) ${COLOR.gray("(" + fmtMs(iterMs) + "; model " + fmtMs(thinkMs) + ")")}`));
+    }
+
     const verdict = verifyInvariants(step, blackboard);
     if (!verdict.pass) {
       const sub = branchFactory(verdict.intent || "", step, blackboard);

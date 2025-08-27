@@ -3,7 +3,7 @@
     "precheck": {
       "step_id": "precheck",
       "executor": "intelligent",
-      "goal": "If more research is required to answer the user's request properly, propose and apply a focused subflow; otherwise proceed. Return JSON only.",
+      "goal": "You MUST design and execute a miniature workflow as a subgraph via the 'workflow_inject_subgraph' tool.\n- First: propose the subgraph (dry_run: true). If issues mention schema errors, re-issue with the STRICT schema below.\n- Then: return JSON including {\"decision\":\"applied_subgraph\",\"subgraph_apply\":{\"handle\":\"...\"},\"notes\":\"...\"} to apply it.\n- Attach after this step: { mode: 'after', anchor_step: 'precheck' }.\n- Limits: { max_steps: 3 }.\n- STRICT StepGraph skeleton (fill goals/fields accordingly; DO NOT use an array for steps):\n{\n  \"steps\": {\n    \"plan_sources\": {\n      \"step_id\": \"plan_sources\",\n      \"executor\": \"intelligent\",\n      \"goal\": \"Plan two trustworthy sources to check the latest Node.js LTS.\",\n      \"inputs\": {\"required\": [], \"optional\": []},\n      \"outputs_schema\": {\"plan\": \"string\"},\n      \"determinism\": \"low\",\n      \"invariants\": []\n    },\n    \"fetch_and_compare\": {\n      \"step_id\": \"fetch_and_compare\",\n      \"executor\": \"intelligent\",\n      \"goal\": \"Use tools to fetch versions and compare.\",\n      \"inputs\": {\"required\": [\"plan_sources.plan\"], \"optional\": []},\n      \"outputs_schema\": {\"comparison\": \"string\"},\n      \"determinism\": \"low\",\n      \"invariants\": []\n    },\n    \"summarize_findings\": {\n      \"step_id\": \"summarize_findings\",\n      \"executor\": \"intelligent\",\n      \"goal\": \"Summarize the findings.\",\n      \"inputs\": {\"required\": [\"fetch_and_compare.comparison\"], \"optional\": []},\n      \"outputs_schema\": {\"summary\": \"string\"},\n      \"determinism\": \"low\",\n      \"invariants\": []\n    }\n  },\n  \"edges\": [\n    {\"from\": \"plan_sources\", \"to\": \"fetch_and_compare\"},\n    {\"from\": \"fetch_and_compare\", \"to\": \"summarize_findings\"}\n  ]\n}\nReturn JSON ONLY with fields: decision, subgraph_apply, notes.",
       "inputs": {
         "required": [
           "user_goal"
@@ -11,12 +11,15 @@
         "optional": []
       },
       "outputs_schema": {
-        "decision": "string (applied_subgraph|not_needed)",
-        "subgraph_apply": "object (optional, include {handle} if applied)",
+        "decision": "string (must equal 'applied_subgraph')",
+        "subgraph_apply": "object ({ handle:string })",
         "notes": "string"
       },
       "determinism": "low",
-      "invariants": []
+      "invariants": [
+        "decision must be 'applied_subgraph'",
+        "subgraph_apply.handle must be present"
+      ]
     }
   },
   "edges": []
