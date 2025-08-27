@@ -3,8 +3,9 @@
 // - Graph unwrap (plain or wrapped {stepgraph|graph|workflow})
 // - File inputs via --file/--fileb/--filejson key=path
 // - Interactive prompts for FIRST step's required inputs (after reading files)
-// - **file://** answers at the prompt load file contents as text
-// - **--autorun**: after running, if the last step's outputs contain a valid StepGraph, compile & run it automatically.
+// - file:// answers at prompts load file contents as text
+// - --autorun: after running, if the last step’s outputs contain a StepGraph, compile & run it
+//   **with its own missing-first-step-inputs prompt** as well.
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,7 +90,7 @@ function unwrapGraph(candidate: any): { graph: StepGraph; unwrappedFrom?: string
 }
 
 function tryFileUriToText(uri: string): string {
-  // Accepts file:// URLs (file:///C:/path or file:///home/x), and permissive fallback: file://C:\path
+  // Accepts file:// URLs (file:///C:/path or file:///home/x), and fallback: file://C:\path
   let filePath = uri.slice('file://'.length);
   try {
     if (uri.startsWith('file:///')) {
@@ -224,6 +225,25 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}, files:
     if (candidate) {
       console.log(`[Runner] --autorun: executing produced StepGraph from '${candidate.source}'.`);
       const compiled2 = compileGraph(candidate.graph);
+
+      // Before autorun, prompt for missing inputs of its first step, using current blackboard values as 'provided'
+      const order2 = topoSort(compiled2);
+      if (order2.length === 0) throw new Error('Autorun graph has no steps.');
+      const first2 = compiled2.steps[order2[0]];
+
+      const provided2: KV = {};
+      const required2 = Array.isArray(first2.inputs?.required) ? (first2.inputs!.required as string[]) : [];
+      for (const k of required2) {
+        try {
+          const v = read(blackboard as any, k);
+          if (v !== undefined) provided2[k] = v;
+        } catch {}
+      }
+      const prompted2 = await promptForMissingInputs(first2, provided2);
+      for (const [k,v] of Object.entries(prompted2)) {
+        write(blackboard, k, v);
+      }
+
       await runGraph({
         provider, tools, graph: compiled2, blackboard,
         model: process.env.MODEL || 'gpt-4o-mini',
