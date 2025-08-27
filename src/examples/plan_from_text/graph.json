@@ -1,0 +1,25 @@
+{
+  "steps": {
+    "draft_stepgraph": {
+      "step_id": "draft_stepgraph",
+      "executor": "intelligent",
+      "goal": "From the user's problem statement, emit a valid StepGraph **object** for a concrete workflow to solve it.\n- Use ONLY available tools: web_search, cli_exec, http_request. No meta-tools.\n- Keep it small (2\u20135 steps). **steps must be an OBJECT keyed by step_id; edges is an ARRAY**.\n- Each step must include: step_id, executor ('intelligent'|'procedural'|'workflow'), goal, inputs{required,optional}, outputs_schema, determinism, invariants.\n- **Return strict JSON with a single field 'stepgraph' (NOT stringified).**",
+      "inputs": {
+        "required": [
+          "user_problem"
+        ],
+        "optional": []
+      },
+      "outputs_schema": {
+        "stepgraph": "object (StepGraph object; not a string)"
+      },
+      "determinism": "low",
+      "invariants": [
+        "typeof stepgraph === 'object'",
+        "stepgraph.steps is an object (not array)",
+        "Array.isArray(stepgraph.edges) === true"
+      ]
+    }
+  },
+  "edges": []
+}
