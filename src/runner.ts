@@ -1,5 +1,7 @@
 // src/runner.ts
 // Generic runner: load any graph JSON and optional initial inputs, then execute.
+// Accepts either a plain StepGraph {steps,edges} or a single-field wrapper
+// like { stepgraph: {steps,edges} } / { graph: {...} } / { workflow: {...} }.
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,9 +47,39 @@ async function readStdin(): Promise<string> {
   });
 }
 
+function hasSteps(obj: any): obj is StepGraph {
+  return obj && typeof obj === 'object' && obj.steps && typeof obj.steps === 'object';
+}
+
+function unwrapGraph(candidate: any): { graph: StepGraph; unwrappedFrom?: string } {
+  if (hasSteps(candidate)) return { graph: candidate };
+  if (!candidate || typeof candidate !== 'object') {
+    throw new Error('Provided JSON is not an object.');
+  }
+  const preferred = ['stepgraph', 'graph', 'workflow'];
+  for (const key of preferred) {
+    const inner = (candidate as any)[key];
+    if (hasSteps(inner)) return { graph: inner, unwrappedFrom: key };
+  }
+  const keysList = Object.keys(candidate);
+  if (keysList.length === 1) {
+    const k = keysList[0];
+    const inner = (candidate as any)[k];
+    if (hasSteps(inner)) return { graph: inner, unwrappedFrom: k };
+  }
+  for (const [k, v] of Object.entries(candidate)) {
+    if (hasSteps(v)) return { graph: v as StepGraph, unwrappedFrom: String(k) };
+  }
+  throw new Error('No StepGraph found: expected {steps:{...},edges:[...]} or a single-field object that contains it.');
+}
+
 export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   const raw = fs.readFileSync(graphPath, 'utf8');
-  const graph = JSON.parse(raw) as StepGraph;
+  const parsed = JSON.parse(raw);
+  const { graph, unwrappedFrom } = unwrapGraph(parsed);
+  if (unwrappedFrom) {
+    console.log(`[Runner] Unwrapped StepGraph from field '${unwrappedFrom}'.`);
+  }
   const compiled = compileGraph(graph);
 
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
@@ -57,7 +89,6 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
 
-  // Seed initial KV
   for (const [k,v] of Object.entries(initialKV)) {
     write(blackboard, k, v);
   }
@@ -69,7 +100,6 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
     maxToolExecPerStep: Number(process.env.MAX_TOOL_EXEC_PER_STEP || 8)
   });
 
-  // Print blackboard contents
   console.log('\n[Blackboard]');
   for (const k of keys(blackboard)) {
     console.log(`• ${k}:`, JSON.stringify(read(blackboard, k), null, 2));
@@ -84,11 +114,9 @@ if (process.argv[1] && path.basename(process.argv[1]).includes('runner')) {
       process.exit(2);
     }
     if (stdinTo) {
-      try {
-        if (!process.stdin.isTTY) {
-          kv[stdinTo] = await readStdin();
-        }
-      } catch {}
+      if (!process.stdin.isTTY) {
+        kv[stdinTo] = await readStdin();
+      }
     }
     await runGraphFile(graphPath, kv);
   })().catch(e => { console.error(e); process.exit(1); });
