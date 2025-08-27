@@ -1,12 +1,12 @@
 // src/runner.ts
-// Generic runner: load any graph JSON and optional initial inputs, then execute.
-// - Accepts either a plain StepGraph {steps,edges} or a single-field wrapper
-//   { stepgraph: {...} } / { graph: {...} } / { workflow: {...} }.
-// - Prompts interactively for missing required inputs of the FIRST step (entry step).
-//   Disable with NO_INTERACTIVE=1.
+// Generic runner with:
+// - Graph unwrap (plain or wrapped)
+// - Interactive prompts for first-step required inputs
+// - File inputs via --file/--fileb/--filejson key=path
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import readline from 'node:readline';
 import { compileGraph } from './orchestrator/compiler.js';
 import { topoSort } from './orchestrator/topo.js';
@@ -17,26 +17,49 @@ import { buildToolRegistry } from './tools/registry.js';
 import { createBlackboard, write, keys, read } from './blackboard/index.js';
 import type { StepGraph, StepContract } from './types/contracts.js';
 
-type KV = Record<string, string>;
+type KV = Record<string, any>;
+type FileSpec = { key: string; path: string; mode: 'text'|'base64'|'json' };
 
-function parseArgs(argv: string[]): { graphPath?: string; kv: KV; stdinTo?: string } {
-  const out: { graphPath?: string; kv: KV; stdinTo?: string } = { kv: {} };
+function parseArgs(argv: string[]): { graphPath?: string; kv: KV; stdinTo?: string; files: FileSpec[] } {
+  const out: { graphPath?: string; kv: KV; stdinTo?: string; files: FileSpec[] } = { kv: {}, files: [] };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
+    const next = () => argv[i+1];
+    const pushFile = (spec: string, mode: 'text'|'base64'|'json') => {
+      const eq = spec.indexOf('=');
+      if (eq > 0) {
+        const k = spec.slice(0, eq);
+        const p = spec.slice(eq+1);
+        out.files.push({ key: k, path: p, mode });
+      }
+    };
+
     if (a.startsWith('--graph=')) out.graphPath = a.slice('--graph='.length);
-    else if (a === '--graph' && argv[i+1]) { out.graphPath = argv[++i]; }
+    else if (a === '--graph' && next()) { out.graphPath = argv[++i]; }
     else if (a.startsWith('--kv=')) {
       const kvp = a.slice('--kv='.length);
       const eq = kvp.indexOf('=');
       if (eq > 0) out.kv[kvp.slice(0, eq)] = kvp.slice(eq+1);
-    } else if (a === '--kv' && argv[i+1]) {
+    } else if (a === '--kv' && next()) {
       const kvp = argv[++i];
       const eq = kvp.indexOf('=');
       if (eq > 0) out.kv[kvp.slice(0, eq)] = kvp.slice(eq+1);
     } else if (a.startsWith('--stdin-to=')) {
       out.stdinTo = a.slice('--stdin-to='.length);
-    } else if (a === '--stdin-to' && argv[i+1]) {
+    } else if (a === '--stdin-to' && next()) {
       out.stdinTo = argv[++i];
+    } else if (a.startsWith('--file=')) {
+      pushFile(a.slice('--file='.length), 'text');
+    } else if (a === '--file' && next()) {
+      pushFile(argv[++i], 'text');
+    } else if (a.startsWith('--fileb=')) {
+      pushFile(a.slice('--fileb='.length), 'base64');
+    } else if (a === '--fileb' && next()) {
+      pushFile(argv[++i], 'base64');
+    } else if (a.startsWith('--filejson=')) {
+      pushFile(a.slice('--filejson='.length), 'json');
+    } else if (a === '--filejson' && next()) {
+      pushFile(argv[++i], 'json');
     }
   }
   return out;
@@ -93,7 +116,41 @@ async function promptForMissingInputs(step: StepContract, initialKV: KV): Promis
   return answers;
 }
 
-export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
+function sha256(buf: Buffer): string {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function readFileSpec(spec: FileSpec, limitMB: number): { value: any; meta: any } {
+  const st = fs.statSync(spec.path);
+  const sizeMB = st.size / (1024*1024);
+  if (sizeMB > limitMB) {
+    throw new Error(`Input file too large: ${spec.path} (${sizeMB.toFixed(2)}MB > ${limitMB}MB). Set MAX_INPUT_FILE_MB to override.`);
+  }
+  const buf = fs.readFileSync(spec.path);
+  const meta = {
+    filename: path.basename(spec.path),
+    abspath: path.resolve(spec.path),
+    size_bytes: st.size,
+    sha256: sha256(buf),
+    mtime_ms: st.mtimeMs,
+    mode: spec.mode
+  };
+  if (spec.mode === 'base64') {
+    return { value: buf.toString('base64'), meta };
+  } else if (spec.mode === 'json') {
+    const text = buf.toString('utf8');
+    try {
+      return { value: JSON.parse(text), meta };
+    } catch (e: any) {
+      throw new Error(`Failed to parse JSON file '${spec.path}': ${e?.message || e}`);
+    }
+  } else {
+    // text
+    return { value: buf.toString('utf8'), meta };
+  }
+}
+
+export async function runGraphFile(graphPath: string, initialKV: KV = {}, files: FileSpec[] = []) {
   const raw = fs.readFileSync(graphPath, 'utf8');
   const parsed = JSON.parse(raw);
   const { graph, unwrappedFrom } = unwrapGraph(parsed);
@@ -110,8 +167,8 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   const prompted = await promptForMissingInputs(firstStep, initialKV);
 
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
-      ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-      : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+    ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+    : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
 
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
@@ -119,6 +176,14 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   // Seed initial KV + prompted values
   for (const [k,v] of Object.entries({ ...initialKV, ...prompted })) {
     write(blackboard, k, v);
+  }
+
+  // Read files and write value + metadata
+  const limitMB = Number(process.env.MAX_INPUT_FILE_MB || 2);
+  for (const f of files) {
+    const { value, meta } = readFileSpec(f, limitMB);
+    write(blackboard, f.key, value);
+    write(blackboard, `${f.key}__meta`, meta);
   }
 
   await runGraph({
@@ -129,7 +194,7 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   });
 
   // Print blackboard contents
-  console.log('\\n[Blackboard]');
+  console.log('\n[Blackboard]');
   for (const k of keys(blackboard)) {
     console.log(`• ${k}:`, JSON.stringify(read(blackboard, k), null, 2));
   }
@@ -137,9 +202,9 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
 
 if (process.argv[1] && path.basename(process.argv[1]).includes('runner')) {
   (async () => {
-    const { graphPath, kv, stdinTo } = parseArgs(process.argv);
+    const { graphPath, kv, stdinTo, files } = parseArgs(process.argv);
     if (!graphPath) {
-      console.error('Usage: node dist/src/runner.js --graph path/to/graph.json [--kv key=value]... [--stdin-to user_problem] < input.txt');
+      console.error('Usage: node dist/src/runner.js --graph path/to/graph.json [--kv key=value]... [--file key=path] [--fileb key=path] [--filejson key=path] [--stdin-to user_problem] < input.txt');
       process.exit(2);
     }
     if (stdinTo) {
@@ -147,6 +212,6 @@ if (process.argv[1] && path.basename(process.argv[1]).includes('runner')) {
         kv[stdinTo] = await readStdin();
       }
     }
-    await runGraphFile(graphPath, kv);
+    await runGraphFile(graphPath, kv, files);
   })().catch(e => { console.error(e); process.exit(1); });
 }
