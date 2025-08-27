@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p .",
-    "start": "node dist/src/index.js",
+    "start": "node dist/runner --graph=src/examples/plan_from_text/graph.json --autorun",
     "demo": "node dist/src/examples/minimal/run.js",
     "test": "vitest run",
     "dev": "ts-node src/index.ts"
