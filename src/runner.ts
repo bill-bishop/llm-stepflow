@@ -1,17 +1,21 @@
 // src/runner.ts
 // Generic runner: load any graph JSON and optional initial inputs, then execute.
-// Accepts either a plain StepGraph {steps,edges} or a single-field wrapper
-// like { stepgraph: {steps,edges} } / { graph: {...} } / { workflow: {...} }.
+// - Accepts either a plain StepGraph {steps,edges} or a single-field wrapper
+//   { stepgraph: {...} } / { graph: {...} } / { workflow: {...} }.
+// - Prompts interactively for missing required inputs of the FIRST step (entry step).
+//   Disable with NO_INTERACTIVE=1.
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { compileGraph } from './orchestrator/compiler.js';
+import { topoSort } from './orchestrator/topo.js';
 import { runGraph } from './orchestrator/run.js';
 import { OpenAIChatCompletions } from './llm/openai.js';
 import { OpenAIResponses } from './llm/openai_responses.js';
 import { buildToolRegistry } from './tools/registry.js';
 import { createBlackboard, write, keys, read } from './blackboard/index.js';
-import type { StepGraph } from './types/contracts.js';
+import type { StepGraph, StepContract } from './types/contracts.js';
 
 type KV = Record<string, string>;
 
@@ -73,6 +77,22 @@ function unwrapGraph(candidate: any): { graph: StepGraph; unwrappedFrom?: string
   throw new Error('No StepGraph found: expected {steps:{...},edges:[...]} or a single-field object that contains it.');
 }
 
+async function promptForMissingInputs(step: StepContract, initialKV: KV): Promise<KV> {
+  const interactive = (process.env.NO_INTERACTIVE ?? "0") === "0";
+  if (!interactive) return {};
+  const required = Array.isArray(step.inputs?.required) ? step.inputs!.required as string[] : [];
+  const askKeys = required.filter(k => typeof k === 'string' && k.length > 0 && !k.includes('.') && initialKV[k] === undefined);
+  if (askKeys.length === 0) return {};
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answers: KV = {};
+  for (const k of askKeys) {
+    const answer: string = await new Promise(res => rl.question(`Enter value for required input '${k}': `, res));
+    answers[k] = answer;
+  }
+  rl.close();
+  return answers;
+}
+
 export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   const raw = fs.readFileSync(graphPath, 'utf8');
   const parsed = JSON.parse(raw);
@@ -82,14 +102,22 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
   }
   const compiled = compileGraph(graph);
 
+  // Determine first step (entry in topo order) and prompt for missing required inputs
+  const order = topoSort(compiled);
+  if (order.length === 0) throw new Error('Graph has no steps.');
+  const firstStepId = order[0];
+  const firstStep = compiled.steps[firstStepId];
+  const prompted = await promptForMissingInputs(firstStep, initialKV);
+
   const provider = (process.env.OPENAI_API_STYLE || 'chat').toLowerCase() === 'responses'
-    ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-    : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+      ? new OpenAIResponses(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+      : new OpenAIChatCompletions(process.env.OPENAI_API_KEY || 'DUMMY', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
 
   const tools = buildToolRegistry();
   const blackboard = createBlackboard();
 
-  for (const [k,v] of Object.entries(initialKV)) {
+  // Seed initial KV + prompted values
+  for (const [k,v] of Object.entries({ ...initialKV, ...prompted })) {
     write(blackboard, k, v);
   }
 
@@ -100,7 +128,8 @@ export async function runGraphFile(graphPath: string, initialKV: KV = {}) {
     maxToolExecPerStep: Number(process.env.MAX_TOOL_EXEC_PER_STEP || 8)
   });
 
-  console.log('\n[Blackboard]');
+  // Print blackboard contents
+  console.log('\\n[Blackboard]');
   for (const k of keys(blackboard)) {
     console.log(`• ${k}:`, JSON.stringify(read(blackboard, k), null, 2));
   }
